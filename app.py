@@ -8,7 +8,7 @@
 """
 
 import atexit
-import io
+import mimetypes
 import os
 import re
 import shutil
@@ -16,7 +16,6 @@ import subprocess
 import tempfile
 import threading
 import time
-import urllib.request
 import uuid
 import warnings
 
@@ -24,6 +23,7 @@ import librosa
 import numpy as np
 import yt_dlp
 from flask import Flask, jsonify, request, send_file
+from werkzeug.utils import secure_filename
 
 warnings.simplefilter("ignore")
 
@@ -102,14 +102,21 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 파일 업로드 최대 5
 
 FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 
-# 임시 파일 레지스트리: {file_id: filepath}
+# 임시 파일 레지스트리: {file_id: {'path': filepath, 'title': str, ...}}
 TEMP = {}
+TEMP_LOCK = threading.Lock()
 
 # 허용된 오디오 확장자
 ALLOWED_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.flac', '.m4a', '.webm', '.opus', '.aac'}
 
 # 동시 분석 요청 제한
 _analyze_semaphore = threading.Semaphore(3)
+
+# YouTube 임시 캐시 설정
+YT_CACHE_TTL_SECONDS = int(os.environ.get('YT_CACHE_TTL_SECONDS', '1800'))
+YT_MAX_DURATION_SECONDS = int(os.environ.get('YT_MAX_DURATION_SECONDS', '1200'))
+YT_MAX_FILESIZE = int(os.environ.get('YT_MAX_FILESIZE', str(80 * 1024 * 1024)))
+YT_TOR_WAIT_SECONDS = int(os.environ.get('YT_TOR_WAIT_SECONDS', '20'))
 
 # YouTube URL 화이트리스트 (SSRF 방지)
 _YT_PATTERN = re.compile(
@@ -301,7 +308,7 @@ def _get_yt_cookies():
     return None
 
 
-# ── YouTube 오디오 추출 엔진 ───────────────────────────────────────────────────
+# ── YouTube 오디오 준비 엔진 ───────────────────────────────────────────────────
 
 def _try_pytubefix(yt_url):
     """pytubefix (InnerTube API)로 오디오 스트림 URL 추출."""
@@ -316,55 +323,171 @@ def _try_pytubefix(yt_url):
 _YDL_CLIENTS = [['web'], ['ios'], ['android'], ['web_creator'], ['mweb']]
 
 
-def _try_ytdlp(yt_url):
-    """yt-dlp로 여러 클라이언트를 순차 시도해 오디오 URL 추출. 쿠키 있으면 사용."""
+class _YtdlpLogger:
+    def debug(self, msg):
+        pass
+
+    def warning(self, msg):
+        app.logger.debug(msg)
+
+    def error(self, msg):
+        app.logger.debug(msg)
+
+
+def _should_use_tor(cookies_file):
+    mode = os.environ.get('YT_USE_TOR', 'auto').strip().lower()
+    if mode in {'0', 'false', 'no', 'off'}:
+        return False
+    if mode in {'1', 'true', 'yes', 'on'}:
+        return _TOR_READY
+    return _TOR_READY and not cookies_file
+
+
+def _wait_for_tor_if_needed():
+    if not shutil.which('tor') or _TOR_READY or YT_TOR_WAIT_SECONDS <= 0:
+        return
+    deadline = time.time() + YT_TOR_WAIT_SECONDS
+    while time.time() < deadline:
+        if _TOR_READY:
+            return
+        time.sleep(0.5)
+
+
+def _yt_match_filter(info_dict, *args, **kwargs):
+    duration = info_dict.get('duration')
+    if duration and duration > YT_MAX_DURATION_SECONDS:
+        return f"영상이 너무 깁니다. 최대 {YT_MAX_DURATION_SECONDS // 60}분까지 지원합니다."
+
+    size = info_dict.get('filesize') or info_dict.get('filesize_approx')
+    if size and size > YT_MAX_FILESIZE:
+        return "오디오 파일이 너무 큽니다. 더 짧은 영상을 사용해 주세요."
+
+    return None
+
+
+def _ytdlp_base_opts(clients):
+    """yt-dlp 공통 옵션. 쿠키/Tor는 추출과 다운로드에 동일하게 적용한다."""
     cookies_file = _get_yt_cookies()
+    opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+        'socket_timeout': 30,
+        'retries': 3,
+        'fragment_retries': 3,
+        'continuedl': False,
+        'overwrites': True,
+        'max_filesize': YT_MAX_FILESIZE,
+        'match_filter': _yt_match_filter,
+        'noprogress': True,
+        'logger': _YtdlpLogger(),
+        'extractor_args': {'youtube': {'player_client': clients}},
+    }
+    if os.path.exists(FFMPEG):
+        opts['ffmpeg_location'] = FFMPEG
+    if cookies_file:
+        opts['cookiefile'] = cookies_file
+    if _should_use_tor(cookies_file):
+        opts['proxy'] = 'socks5://127.0.0.1:9050'
+    return opts
+
+
+def _find_downloaded_audio(workdir):
+    """yt-dlp가 만든 오디오 파일 중 브라우저에서 디코딩하기 좋은 결과를 고른다."""
+    candidates = []
+    for name in os.listdir(workdir):
+        path = os.path.join(workdir, name)
+        if not os.path.isfile(path):
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        if ext in ALLOWED_EXTENSIONS:
+            candidates.append(path)
+    if not candidates:
+        raise RuntimeError("다운로드된 오디오 파일을 찾을 수 없습니다.")
+    return max(candidates, key=lambda p: os.path.getsize(p))
+
+
+def _download_with_ytdlp(yt_url, workdir):
+    """yt-dlp로 여러 클라이언트를 순차 시도해 서버에 오디오 파일을 저장한다."""
     last_err = None
     for clients in _YDL_CLIENTS:
         try:
-            opts = {
-                'format': 'bestaudio[ext=m4a]/bestaudio/best',
-                'quiet': True,
-                'no_warnings': True,
-                'extractor_args': {'youtube': {'player_client': clients}},
-            }
-            if cookies_file:
-                opts['cookiefile'] = cookies_file
-            if _TOR_READY:
-                opts['proxy'] = 'socks5://127.0.0.1:9050'
+            opts = _ytdlp_base_opts(clients)
+            opts.update({
+                'outtmpl': os.path.join(workdir, '%(id)s.%(ext)s'),
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            })
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(yt_url, download=False)
-            audio_url = None
-            for f in reversed(info.get('formats', [])):
-                if f.get('acodec') != 'none' and f.get('vcodec') in (None, 'none'):
-                    audio_url = f.get('url')
-                    break
-            if not audio_url:
-                audio_url = info.get('url')
-            if audio_url:
-                return audio_url, info.get('title', '유튜브 오디오'), int(info.get('duration', 0))
+                info = ydl.extract_info(yt_url, download=True)
+            path = _find_downloaded_audio(workdir)
+            return path, info.get('title', '유튜브 오디오'), int(info.get('duration') or 0)
         except Exception as e:
             last_err = e
+            for name in os.listdir(workdir):
+                try:
+                    os.remove(os.path.join(workdir, name))
+                except OSError:
+                    pass
     raise last_err or RuntimeError("yt-dlp 모든 클라이언트 실패")
 
 
-def _extract_yt_audio(yt_url):
-    """쿠키 유무에 따라 최적 엔진을 선택해 오디오 스트림 URL 추출."""
-    cookies_file = _get_yt_cookies()
+def _download_stream_url(stream_url, workdir, title, duration):
+    """pytubefix 스트림 URL 폴백. 브라우저가 아닌 서버가 직접 받아 CORS를 피한다."""
+    import urllib.request
 
-    # 쿠키가 있으면 yt-dlp+cookies가 가장 신뢰성 높음 → 먼저 시도
-    if cookies_file:
-        engines = [('yt-dlp+cookies', _try_ytdlp), ('pytubefix', _try_pytubefix)]
-    else:
-        engines = [('pytubefix', _try_pytubefix), ('yt-dlp', _try_ytdlp)]
+    path = os.path.join(workdir, 'youtube-audio.m4a')
+    req = urllib.request.Request(stream_url, headers={
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+        'Referer': 'https://www.youtube.com/',
+    })
+    downloaded = 0
+    with urllib.request.urlopen(req, timeout=120) as resp, open(path, 'wb') as out:
+        while True:
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            downloaded += len(chunk)
+            if downloaded > YT_MAX_FILESIZE:
+                raise RuntimeError("오디오 파일이 너무 큽니다. 더 짧은 영상을 사용해 주세요.")
+            out.write(chunk)
+    return path, title, duration
+
+
+def _prepare_yt_audio(yt_url):
+    """YouTube URL을 서버의 임시 오디오 파일로 준비한다."""
+    _wait_for_tor_if_needed()
+    workdir = tempfile.mkdtemp(prefix='yt_audio_')
+    engines = [('yt-dlp', lambda url: _download_with_ytdlp(url, workdir))]
 
     for name, fn in engines:
         try:
-            result = fn(yt_url)
-            app.logger.info(f'YouTube 추출 성공: {name}')
-            return result
+            path, title, duration = fn(yt_url)
+            if duration > YT_MAX_DURATION_SECONDS:
+                raise RuntimeError(
+                    f"영상이 너무 깁니다. 최대 {YT_MAX_DURATION_SECONDS // 60}분까지 지원합니다."
+                )
+            app.logger.info(f'YouTube 오디오 준비 성공: {name}')
+            return path, title, duration, workdir
         except Exception as e:
-            app.logger.warning(f'YouTube 추출 실패 ({name}): {e}')
+            app.logger.warning(f'YouTube 오디오 준비 실패 ({name}): {e}')
+
+    try:
+        stream_url, title, duration = _try_pytubefix(yt_url)
+        if duration > YT_MAX_DURATION_SECONDS:
+            raise RuntimeError(
+                f"영상이 너무 깁니다. 최대 {YT_MAX_DURATION_SECONDS // 60}분까지 지원합니다."
+            )
+        path, title, duration = _download_stream_url(stream_url, workdir, title, duration)
+        app.logger.info('YouTube 오디오 준비 성공: pytubefix')
+        return path, title, duration, workdir
+    except Exception as e:
+        app.logger.warning(f'YouTube 오디오 준비 실패 (pytubefix): {e}')
+        shutil.rmtree(workdir, ignore_errors=True)
 
     raise RuntimeError(
         "유튜브 영상을 불러올 수 없습니다.\n"
@@ -391,9 +514,33 @@ def index():
     return send_file('index.html')
 
 
+def _cleanup_temp_entry(fid):
+    with TEMP_LOCK:
+        entry = TEMP.pop(fid, None)
+    if not isinstance(entry, dict):
+        return
+    workdir = entry.get('workdir')
+    path = entry.get('path')
+    if workdir:
+        shutil.rmtree(workdir, ignore_errors=True)
+    elif path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _schedule_cleanup(fid):
+    def cleanup_later():
+        time.sleep(YT_CACHE_TTL_SECONDS)
+        _cleanup_temp_entry(fid)
+
+    threading.Thread(target=cleanup_later, daemon=True).start()
+
+
 @app.route('/yt/download', methods=['POST'])
 def yt_download():
-    """YouTube URL → 스트림 URL 추출 (다중 엔진 폴백) → ID + audio_url 반환."""
+    """YouTube URL → 서버 임시 오디오 파일 준비 → ID 반환."""
     data = request.get_json(silent=True) or {}
     url = data.get('url', '').strip()
     if not url:
@@ -402,46 +549,57 @@ def yt_download():
         return jsonify({'error': '유튜브 URL만 허용됩니다.'}), 400
 
     try:
-        audio_url, title, duration = _extract_yt_audio(url)
+        path, title, duration, workdir = _prepare_yt_audio(url)
     except Exception as e:
         return jsonify({'error': str(e)[:300]}), 422
 
     fid = str(uuid.uuid4())
-    TEMP[fid] = {'stream_url': audio_url, 'title': title}
-    threading.Thread(target=lambda: (time.sleep(600), TEMP.pop(fid, None)), daemon=True).start()
+    mimetype = mimetypes.guess_type(path)[0] or 'audio/mpeg'
+    with TEMP_LOCK:
+        TEMP[fid] = {
+            'path': path,
+            'title': title,
+            'duration': duration,
+            'workdir': workdir,
+            'mimetype': mimetype,
+            'created_at': time.time(),
+        }
+    _schedule_cleanup(fid)
 
-    return jsonify({'id': fid, 'title': title, 'duration': duration, 'audio_url': audio_url})
+    return jsonify({
+        'id': fid,
+        'title': title,
+        'duration': duration,
+        'size': os.path.getsize(path),
+    })
 
 
 @app.route('/yt/audio/<fid>')
 def serve_audio(fid):
-    """Plan B 폴백: 브라우저 직접 fetch 실패 시 서버가 스트리밍 프록시 역할."""
+    """서버에 준비된 임시 오디오 파일을 같은 출처에서 제공."""
     try:
         uuid.UUID(fid)
     except ValueError:
         return 'Invalid ID', 400
 
-    entry = TEMP.get(fid)
+    with TEMP_LOCK:
+        entry = TEMP.get(fid)
     if not entry or not isinstance(entry, dict):
         return 'Not found', 404
 
-    stream_url = entry.get('stream_url')
-    if not stream_url:
-        return 'No stream URL', 404
+    path = entry.get('path')
+    if not path or not os.path.exists(path):
+        return 'Audio file expired', 404
 
-    def generate():
-        req = urllib.request.Request(stream_url, headers={
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
-            'Referer': 'https://www.youtube.com/',
-        })
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            while True:
-                chunk = resp.read(65536)
-                if not chunk:
-                    break
-                yield chunk
-
-    return app.response_class(generate(), mimetype='audio/mp4')
+    title = secure_filename(entry.get('title') or 'youtube-audio') or 'youtube-audio'
+    ext = os.path.splitext(path)[1].lower() or '.mp3'
+    return send_file(
+        path,
+        mimetype=entry.get('mimetype') or 'audio/mpeg',
+        download_name=f'{title}{ext}',
+        conditional=True,
+        max_age=0,
+    )
 
 
 @app.route('/analyze', methods=['POST'])
@@ -469,12 +627,15 @@ def analyze():
                 uuid.UUID(fid)
             except ValueError:
                 return jsonify({'error': '잘못된 file_id'}), 400
-            entry = TEMP.get(fid)
+            with TEMP_LOCK:
+                entry = TEMP.get(fid)
             if not entry:
                 return jsonify({'error': '파일을 찾을 수 없습니다. 먼저 YouTube 불러오기를 실행하세요.'}), 404
-            # TEMP 값이 dict(스트림 URL)인 경우와 filepath(구형)인 경우 모두 처리
+            # TEMP 값이 dict(임시 파일)인 경우와 filepath(구형)인 경우 모두 처리
             if isinstance(entry, dict):
-                audio_path = entry['stream_url']
+                audio_path = entry.get('path')
+                if not audio_path or not os.path.exists(audio_path):
+                    return jsonify({'error': '오디오 파일이 만료되었습니다. 다시 불러와 주세요.'}), 404
             else:
                 audio_path = entry
                 if not os.path.exists(audio_path):

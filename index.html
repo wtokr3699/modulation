@@ -752,12 +752,12 @@ async function loadFromYouTube() {
   ytBtn.disabled = true;
   ytBtnLabel.textContent = '처리 중';
   ytSpinner.classList.remove('hidden');
-  setYtStatus('🔍 영상 정보 가져오는 중...');
+  setYtStatus('🔍 서버에서 오디오 준비 중...');
 
   try {
     await ensureTone();
 
-    // Step 1: 서버에서 스트림 URL 추출 (파일 다운로드 없음)
+    // Step 1: 서버에서 오디오 파일 준비
     const dlRes = await fetchWithColdStart('/yt/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -768,19 +768,13 @@ async function loadFromYouTube() {
 
     setYtStatus('🎵 오디오 불러오는 중...');
 
-    // Step 2 — Plan A: 브라우저가 YouTube CDN에서 직접 fetch (빠름, 봇 차단 없음)
-    let arrayBuf;
-    try {
-      const audioRes = await fetch(dlData.audio_url);
-      if (!audioRes.ok) throw new Error('CDN 직접 접근 실패');
-      arrayBuf = await audioRes.arrayBuffer();
-    } catch (_) {
-      // Step 2 — Plan B: CORS 막힌 경우 서버 스트리밍 프록시로 폴백
-      setYtStatus('🔄 서버를 통해 불러오는 중...');
-      const proxyRes = await fetchWithColdStart(`/yt/audio/${dlData.id}`);
-      if (!proxyRes.ok) throw new Error('오디오 파일을 가져올 수 없습니다.');
-      arrayBuf = await proxyRes.arrayBuffer();
+    // Step 2: 같은 출처의 서버 캐시 파일만 읽는다. YouTube CDN 직접 fetch는 CORS로 막힌다.
+    const audioRes = await fetchWithColdStart(`/yt/audio/${dlData.id}`);
+    if (!audioRes.ok) {
+      const message = await audioRes.text().catch(() => '');
+      throw new Error(message || '오디오 파일을 가져올 수 없습니다.');
     }
+    const arrayBuf = await audioRes.arrayBuffer();
 
     const title = dlData.title || '유튜브 오디오';
     await loadAudioBuffer(arrayBuf, title);
@@ -789,7 +783,7 @@ async function loadFromYouTube() {
     setYtStatus(`✅ "${title}" 로드 완료`, 'success');
     dropZone.style.borderColor = 'var(--accent-light)';
 
-    // 분석: 서버에 캐시된 스트림 URL ID 전달
+    // 분석: 서버에 캐시된 임시 오디오 파일 ID 전달
     triggerAnalysis(null, dlData.id);
   } catch (e) {
     setYtStatus(`⚠️ ${e.message}`, 'error');
