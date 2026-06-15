@@ -1,9 +1,16 @@
 FROM python:3.11-slim
 
-# ffmpeg + libsndfile + Node.js + git (bgutil 빌드에 필요)
+# ffmpeg + libsndfile + Node.js 20 + git (bgutil 빌드에 필요)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        ffmpeg libsndfile1 nodejs npm git tor \
+        ca-certificates curl gnupg ffmpeg libsndfile1 git tor \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -38,20 +38,33 @@ except ImportError:
 # ── bgutil PO Token 서버 (YouTube 봇 차단 우회, 개인 계정 불필요) ──────────────
 _BGUTIL_SCRIPT = '/bgutil/server/build/main.js'
 _BGUTIL_PROC = None
+_BGUTIL_READY = False
+_BGUTIL_BASE_URL = os.environ.get('BGUTIL_BASE_URL', 'http://127.0.0.1:4416').rstrip('/')
 
 
 def _start_bgutil():
-    global _BGUTIL_PROC
+    global _BGUTIL_PROC, _BGUTIL_READY
     if not os.path.exists(_BGUTIL_SCRIPT):
         return  # 로컬 개발 환경에서는 스킵
     try:
+        import socket
         _BGUTIL_PROC = subprocess.Popen(
             ['node', _BGUTIL_SCRIPT],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        time.sleep(3)  # 서버 초기화 대기
-        print('[bgutil] PO Token 서버 시작 완료 (port 4416)')
+        for _ in range(30):
+            time.sleep(0.5)
+            if _BGUTIL_PROC.poll() is not None:
+                raise RuntimeError(f'프로세스 종료됨 (code={_BGUTIL_PROC.returncode})')
+            try:
+                with socket.create_connection(('127.0.0.1', 4416), timeout=1):
+                    _BGUTIL_READY = True
+                    print('[bgutil] PO Token 서버 준비 완료 (port 4416)')
+                    return
+            except OSError:
+                pass
+        print('[bgutil] 15초 내 포트 준비 실패')
     except Exception as e:
         print(f'[bgutil] 서버 시작 실패: {e}')
 
@@ -368,6 +381,18 @@ def _yt_match_filter(info_dict, *args, **kwargs):
 def _ytdlp_base_opts(clients):
     """yt-dlp 공통 옵션. 쿠키/Tor는 추출과 다운로드에 동일하게 적용한다."""
     cookies_file = _get_yt_cookies()
+    bgutil_configured = _BGUTIL_READY or bool(os.environ.get('BGUTIL_BASE_URL'))
+    fetch_pot = os.environ.get('YT_FETCH_POT', 'always' if bgutil_configured else 'auto')
+    youtube_args = {
+        'player_client': clients,
+        # Render 같은 클라우드 IP에서 PO Token provider가 자동 판단 전에 필요할 때가 있어 강제로 요청한다.
+        'fetch_pot': [fetch_pot],
+        'pot_trace': [os.environ.get('YT_POT_TRACE', 'true')],
+    }
+    extractor_args = {'youtube': youtube_args}
+    if bgutil_configured:
+        extractor_args['youtubepot-bgutilhttp'] = {'base_url': [_BGUTIL_BASE_URL]}
+
     opts = {
         'format': 'bestaudio/best',
         'quiet': True,
@@ -382,7 +407,7 @@ def _ytdlp_base_opts(clients):
         'match_filter': _yt_match_filter,
         'noprogress': True,
         'logger': _YtdlpLogger(),
-        'extractor_args': {'youtube': {'player_client': clients}},
+        'extractor_args': extractor_args,
     }
     if os.path.exists(FFMPEG):
         opts['ffmpeg_location'] = FFMPEG
@@ -693,7 +718,7 @@ if __name__ == '__main__':
     bgutil_ok = _BGUTIL_PROC is not None
     tor_installed = bool(shutil.which('tor'))
     print(f'  YouTube 쿠키  : {"✅ " + ck if ck else "❌ 미설정"}')
-    print(f'  bgutil PO 토큰: {"✅ 실행 중 (port 4416)" if bgutil_ok else "❌ 미설치 (로컬 모드)"}')
+    print(f'  bgutil PO 토큰: {"✅ 준비됨 " + _BGUTIL_BASE_URL if _BGUTIL_READY else ("⚠️ 실행 확인 안 됨" if bgutil_ok else "❌ 미설치 (로컬 모드)")}')
     print(f'  Tor 프록시    : {"✅ 부트스트랩 중 (port 9050)..." if tor_installed else "❌ 미설치"}')
     print('=' * 52)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
