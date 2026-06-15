@@ -247,6 +247,28 @@
   .error-msg { margin-top: 8px; padding: 8px 12px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; font-size: .8rem; color: var(--danger); display: none; }
   .error-msg.show { display: block; }
 
+  /* Cold Start 안내 오버레이 */
+  .cold-overlay {
+    position: fixed; inset: 0; z-index: 9999;
+    background: rgba(15, 23, 42, 0.85);
+    display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(4px);
+  }
+  .cold-box {
+    background: #fff; border-radius: 16px; padding: 36px 32px;
+    text-align: center; max-width: 320px; width: 90%;
+    box-shadow: 0 20px 60px rgba(0,0,0,.3);
+  }
+  .cold-spinner {
+    width: 48px; height: 48px; margin: 0 auto 20px;
+    border: 4px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 1s linear infinite;
+  }
+  .cold-emoji { font-size: 1.8rem; margin-bottom: 12px; }
+  .cold-title { font-size: 1.05rem; font-weight: 700; color: var(--accent-dark); margin-bottom: 12px; }
+  .cold-desc { font-size: .875rem; color: var(--text-muted); line-height: 1.75; margin-bottom: 16px; }
+  .cold-timer { font-size: .8rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
   @media (max-width: 420px) {
     .pitch-value { font-size: 1.4rem; }
     .presets { gap: 4px; }
@@ -259,6 +281,22 @@
 </style>
 </head>
 <body>
+<!-- Cold Start 안내 오버레이 -->
+<div id="coldStartOverlay" class="cold-overlay hidden">
+  <div class="cold-box">
+    <div class="cold-spinner"></div>
+    <div class="cold-emoji">😴 ➡️ ☀️</div>
+    <div class="cold-title">서버가 잠에서 깨어나는 중이에요</div>
+    <div class="cold-desc">
+      이 서비스는 <strong>무료로 운영</strong>되고 있어서<br>
+      일정 시간 사용하지 않으면 서버가 절전 모드로 전환됩니다.<br><br>
+      처음 접속 시 <strong>최대 1분</strong> 정도 소요될 수 있어요.<br>
+      잠시만 기다려 주시면 정상적으로 이용하실 수 있습니다 🙏
+    </div>
+    <div class="cold-timer" id="coldTimer">잠시만요... 0초</div>
+  </div>
+</div>
+
 <div class="app">
   <header>
     <h1>🎵 반음 전조 도구</h1>
@@ -455,6 +493,51 @@ if (!IS_SERVER) {
   $('serverHint').classList.remove('hidden');
 }
 
+// ── Cold Start 오버레이 ──
+let _coldTimerInterval = null;
+
+function showColdStartOverlay() {
+  const overlay = $('coldStartOverlay');
+  if (!overlay.classList.contains('hidden')) return;
+  overlay.classList.remove('hidden');
+  let elapsed = 0;
+  _coldTimerInterval = setInterval(() => {
+    elapsed++;
+    $('coldTimer').textContent = `${elapsed}초 경과`;
+  }, 1000);
+}
+
+function hideColdStartOverlay() {
+  $('coldStartOverlay').classList.add('hidden');
+  clearInterval(_coldTimerInterval);
+  _coldTimerInterval = null;
+  $('coldTimer').textContent = '잠시만요... 0초';
+}
+
+async function fetchWithColdStart(url, options = {}) {
+  const timer = setTimeout(showColdStartOverlay, 3000);
+  try {
+    const res = await fetch(url, options);
+    return res;
+  } finally {
+    clearTimeout(timer);
+    hideColdStartOverlay();
+  }
+}
+
+// 페이지 로드 후 서버 상태 자동 체크 (서버 모드일 때만)
+if (IS_SERVER) {
+  setTimeout(async () => {
+    const timer = setTimeout(showColdStartOverlay, 2000);
+    try {
+      await fetch('/health', { signal: AbortSignal.timeout(70000) });
+    } catch (_) { /* 오류 무시 */ } finally {
+      clearTimeout(timer);
+      hideColdStartOverlay();
+    }
+  }, 500);
+}
+
 // ── 유틸 ──
 function fmtTime(sec) {
   if (!isFinite(sec) || isNaN(sec)) return '0:00';
@@ -576,7 +659,7 @@ async function triggerAnalysis(file = null, fileId = null) {
       return;
     }
 
-    const res  = await fetch('/analyze', { method: 'POST', headers, body });
+    const res  = await fetchWithColdStart('/analyze', { method: 'POST', headers, body });
     const data = await res.json();
 
     if (!res.ok || data.error) throw new Error(data.error || '분석 실패');
@@ -674,7 +757,7 @@ async function loadFromYouTube() {
   try {
     await ensureTone();
 
-    const dlRes  = await fetch('/yt/download', {
+    const dlRes  = await fetchWithColdStart('/yt/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
@@ -684,7 +767,7 @@ async function loadFromYouTube() {
 
     setYtStatus('🎵 오디오를 불러오는 중...');
 
-    const audioRes = await fetch(`/yt/audio/${dlData.id}`);
+    const audioRes = await fetchWithColdStart(`/yt/audio/${dlData.id}`);
     if (!audioRes.ok) throw new Error('오디오 파일을 가져올 수 없습니다.');
     const arrayBuf = await audioRes.arrayBuffer();
 

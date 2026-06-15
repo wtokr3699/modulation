@@ -188,6 +188,11 @@ def too_large(e):
     return jsonify({'error': '파일 크기가 너무 큽니다 (최대 50MB).'}), 413
 
 
+@app.route('/health')
+def health():
+    return jsonify({'status': 'ok'})
+
+
 @app.route('/')
 def index():
     return send_file('index.html')
