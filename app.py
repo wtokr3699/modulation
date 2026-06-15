@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.request
 import uuid
 import warnings
 
@@ -167,13 +168,15 @@ def get_chord_progression(y, sr, beat_times, key_root, is_major):
 
 
 def load_audio_via_ffmpeg(filepath, max_duration=120):
-    """ffmpeg로 오디오 파일을 float32 PCM으로 변환. 모든 포맷 지원."""
+    """ffmpeg로 오디오 파일 또는 URL을 float32 PCM으로 변환."""
     TARGET_SR = 22050
+    is_url = filepath.startswith('http://') or filepath.startswith('https://')
+    timeout = 300 if is_url else 180  # URL은 네트워크 다운로드 시간 포함
     proc = subprocess.run(
         [FFMPEG, '-i', filepath,
          '-ac', '1', '-ar', str(TARGET_SR),
          '-f', 'f32le', '-t', str(max_duration), '-'],
-        capture_output=True, timeout=180,
+        capture_output=True, timeout=timeout,
     )
     if proc.returncode != 0 or len(proc.stdout) < 1000:
         raise RuntimeError(f"ffmpeg 변환 실패: {proc.stderr[-200:].decode(errors='ignore')}")
@@ -200,7 +203,7 @@ def index():
 
 @app.route('/yt/download', methods=['POST'])
 def yt_download():
-    """YouTube URL → 오디오 다운로드 → 임시 저장 → ID 반환."""
+    """YouTube URL → 스트림 URL 추출 (다운로드 없음) → ID + audio_url 반환."""
     data = request.get_json(silent=True) or {}
     url = data.get('url', '').strip()
     if not url:
@@ -208,61 +211,82 @@ def yt_download():
     if not is_valid_youtube_url(url):
         return jsonify({'error': '유튜브 URL만 허용됩니다.'}), 400
 
-    fid = str(uuid.uuid4())
-    tmpdir = tempfile.mkdtemp(prefix='yt_audio_')
-
     ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': os.path.join(tmpdir, f'{fid}.%(ext)s'),
+        'format': 'bestaudio[ext=m4a]/bestaudio/best',
         'quiet': True,
         'no_warnings': True,
+        'extractor_args': {
+            'youtube': {'player_client': ['ios', 'tv_embedded']},
+        },
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            info = ydl.extract_info(url, download=False)  # 파일 다운로드 없이 URL만 추출
     except yt_dlp.utils.DownloadError as e:
         return jsonify({'error': f'다운로드 실패: {str(e)[:200]}'}), 422
     except Exception as e:
         return jsonify({'error': f'오류: {str(e)[:200]}'}), 500
 
-    files = os.listdir(tmpdir)
-    if not files:
-        return jsonify({'error': '파일이 생성되지 않았습니다.'}), 500
+    # 오디오 전용 스트림 URL 선택 (화질 없는 오디오 트랙 우선)
+    formats = info.get('formats', [])
+    audio_url = None
+    for f in reversed(formats):
+        if f.get('acodec') != 'none' and f.get('vcodec') in (None, 'none'):
+            audio_url = f.get('url')
+            break
+    if not audio_url:
+        audio_url = info.get('url')
 
-    filepath = os.path.join(tmpdir, files[0])
-    TEMP[fid] = filepath
+    if not audio_url:
+        return jsonify({'error': '스트림 URL을 추출할 수 없습니다.'}), 500
+
+    fid = str(uuid.uuid4())
+    TEMP[fid] = {'stream_url': audio_url, 'title': info.get('title', '유튜브 오디오')}
 
     def cleanup():
         time.sleep(600)
-        try:
-            os.remove(filepath)
-            os.rmdir(tmpdir)
-        except OSError:
-            pass
         TEMP.pop(fid, None)
 
     threading.Thread(target=cleanup, daemon=True).start()
 
-    title    = info.get('title', '유튜브 오디오')
-    duration = info.get('duration', 0)
-
-    return jsonify({'id': fid, 'title': title, 'duration': duration})
+    return jsonify({
+        'id': fid,
+        'title': info.get('title', '유튜브 오디오'),
+        'duration': info.get('duration', 0),
+        'audio_url': audio_url,  # 브라우저 직접 fetch용 (Plan A)
+    })
 
 
 @app.route('/yt/audio/<fid>')
 def serve_audio(fid):
-    """임시 오디오 파일 서빙."""
+    """Plan B 폴백: 브라우저 직접 fetch 실패 시 서버가 스트리밍 프록시 역할."""
     try:
         uuid.UUID(fid)
     except ValueError:
         return 'Invalid ID', 400
 
-    filepath = TEMP.get(fid)
-    if not filepath or not os.path.exists(filepath):
+    entry = TEMP.get(fid)
+    if not entry or not isinstance(entry, dict):
         return 'Not found', 404
 
-    return send_file(filepath)
+    stream_url = entry.get('stream_url')
+    if not stream_url:
+        return 'No stream URL', 404
+
+    def generate():
+        req = urllib.request.Request(stream_url, headers={
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+            'Referer': 'https://www.youtube.com/',
+        })
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+
+    return app.response_class(generate(), mimetype='audio/mp4')
 
 
 @app.route('/analyze', methods=['POST'])
@@ -290,9 +314,16 @@ def analyze():
                 uuid.UUID(fid)
             except ValueError:
                 return jsonify({'error': '잘못된 file_id'}), 400
-            audio_path = TEMP.get(fid)
-            if not audio_path or not os.path.exists(audio_path):
+            entry = TEMP.get(fid)
+            if not entry:
                 return jsonify({'error': '파일을 찾을 수 없습니다. 먼저 YouTube 불러오기를 실행하세요.'}), 404
+            # TEMP 값이 dict(스트림 URL)인 경우와 filepath(구형)인 경우 모두 처리
+            if isinstance(entry, dict):
+                audio_path = entry['stream_url']
+            else:
+                audio_path = entry
+                if not os.path.exists(audio_path):
+                    return jsonify({'error': '파일을 찾을 수 없습니다.'}), 404
         else:
             return jsonify({'error': '파일 또는 file_id가 필요합니다.'}), 400
 
