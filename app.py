@@ -421,70 +421,137 @@ def _try_cobalt(yt_url):
 def _try_y2mate(yt_url):
     """y2mate 2단계 API: analyze → convert → 자사 CDN URL 반환.
     반환 URL이 YouTube CDN이 아닌 y2mate CDN이므로 Render.com IP 제한 우회 가능.
+    www-y2mate.com 미러를 먼저 시도한다 (Cloudflare 없는 경우가 많음).
     """
     import json
     import urllib.request as _req
     import urllib.parse
+    import http.cookiejar
 
-    hdrs = {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': 'https://www.y2mate.com/',
-        'Origin': 'https://www.y2mate.com',
-    }
-
-    # Step 1: 영상 분석 — vid, title, 변환 토큰 획득
-    data1 = urllib.parse.urlencode({
-        'k_query': yt_url,
-        'k_page': 'home',
-        'hl': 'en',
-        'q_auto': '0',
-    }).encode()
-    req1 = _req.Request(
-        'https://www.y2mate.com/mates/analyzeV2/ajax',
-        data=data1, headers=hdrs,
+    UA = (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/124.0.0.0 Safari/537.36'
     )
-    with _req.urlopen(req1, timeout=20) as r:
-        info = json.loads(r.read())
 
-    if info.get('status') != 'Ok':
-        raise RuntimeError(f"y2mate 분석 실패: {info.get('mess') or info.get('status')}")
+    # 사용자가 직접 확인한 www-y2mate.com 미러를 먼저 시도
+    mirrors = [
+        'https://www-y2mate.com',
+        'https://www.y2mate.com',
+        'https://y2mate.com',
+    ]
 
-    vid   = info['vid']
-    title = info.get('title', '유튜브 오디오')
-    dur   = int(info.get('t', 0))
+    last_err = None
+    for base in mirrors:
+        try:
+            jar = http.cookiejar.CookieJar()
+            opener = _req.build_opener(_req.HTTPCookieProcessor(jar))
 
-    links_mp3 = info.get('links', {}).get('mp3', {})
-    if not links_mp3:
-        raise RuntimeError('y2mate: MP3 포맷 링크 없음')
+            # 홈페이지 방문으로 세션 쿠키 획득 (Cloudflare 우회용)
+            try:
+                home = _req.Request(base + '/', headers={'User-Agent': UA})
+                with opener.open(home, timeout=10) as r:
+                    r.read()
+            except Exception as he:
+                app.logger.debug(f'[y2mate] {base} 홈페이지 접속 실패(계속): {he}')
 
-    token = None
-    for q in ['mp3128', 'mp3320', 'mp364']:
-        if q in links_mp3:
-            token = links_mp3[q]['k']
-            break
-    if not token:
-        token = next(iter(links_mp3.values()))['k']
+            hdrs = {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': UA,
+                'X-Requested-With': 'XMLHttpRequest',
+                'Referer': base + '/',
+                'Origin': base,
+                'Accept': 'application/json, text/javascript, */*; q=0.01',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
 
-    # Step 2: 변환 요청 — dlink (y2mate CDN URL) 획득
-    data2 = urllib.parse.urlencode({'vid': vid, 'k': token}).encode()
-    req2 = _req.Request(
-        'https://www.y2mate.com/mates/convertV2/index',
-        data=data2, headers=hdrs,
-    )
-    with _req.urlopen(req2, timeout=30) as r:
-        result = json.loads(r.read())
+            # Step 1: 영상 분석 — vid, title, 변환 토큰 획득
+            data1 = urllib.parse.urlencode({
+                'k_query': yt_url, 'k_page': 'home',
+                'hl': 'en', 'q_auto': '0',
+            }).encode()
+            req1 = _req.Request(base + '/mates/analyzeV2/ajax',
+                                data=data1, headers=hdrs)
+            with opener.open(req1, timeout=20) as r:
+                raw1 = r.read()
 
-    if result.get('c_status') != 'CONVERTED':
-        raise RuntimeError(f"y2mate 변환 실패: {result.get('mess') or result.get('c_status')}")
+            try:
+                info = json.loads(raw1)
+            except json.JSONDecodeError:
+                app.logger.warning(
+                    f'[y2mate] {base} 분석 응답이 JSON이 아님 '
+                    f'(Cloudflare 챌린지?): {raw1[:300].decode("utf-8", errors="replace")}'
+                )
+                last_err = RuntimeError(f'{base} 분석 응답 비-JSON')
+                continue
 
-    dlink = result.get('dlink')
-    if not dlink:
-        raise RuntimeError('y2mate: dlink 없음')
+            if info.get('status') != 'Ok':
+                app.logger.warning(
+                    f'[y2mate] {base} 분석 실패: '
+                    f'{info.get("mess") or info.get("status")} | {str(info)[:200]}'
+                )
+                last_err = RuntimeError(f'{base} 분석 실패: {info.get("mess")}')
+                continue
 
-    app.logger.info('[y2mate] 성공')
-    return dlink, title, dur
+            vid   = info['vid']
+            title = info.get('title', '유튜브 오디오')
+            dur   = int(info.get('t', 0))
+
+            links_mp3 = info.get('links', {}).get('mp3', {})
+            if not links_mp3:
+                app.logger.warning(
+                    f'[y2mate] {base} MP3 링크 없음. links: {str(info.get("links", {}))[:200]}'
+                )
+                last_err = RuntimeError(f'{base} MP3 링크 없음')
+                continue
+
+            token = None
+            for q in ['mp3128', 'mp3320', 'mp364']:
+                if q in links_mp3:
+                    token = links_mp3[q]['k']
+                    break
+            if not token:
+                token = next(iter(links_mp3.values()))['k']
+
+            # Step 2: 변환 요청 — dlink (y2mate CDN URL) 획득
+            data2 = urllib.parse.urlencode({'vid': vid, 'k': token}).encode()
+            req2 = _req.Request(base + '/mates/convertV2/index',
+                                data=data2, headers=hdrs)
+            with opener.open(req2, timeout=30) as r:
+                raw2 = r.read()
+
+            try:
+                result = json.loads(raw2)
+            except json.JSONDecodeError:
+                app.logger.warning(
+                    f'[y2mate] {base} 변환 응답 비-JSON: '
+                    f'{raw2[:200].decode("utf-8", errors="replace")}'
+                )
+                last_err = RuntimeError(f'{base} 변환 응답 비-JSON')
+                continue
+
+            if result.get('c_status') != 'CONVERTED':
+                app.logger.warning(
+                    f'[y2mate] {base} 변환 실패: '
+                    f'{result.get("mess") or result.get("c_status")} | {str(result)[:200]}'
+                )
+                last_err = RuntimeError(f'{base} 변환 실패')
+                continue
+
+            dlink = result.get('dlink')
+            if not dlink:
+                app.logger.warning(f'[y2mate] {base} dlink 없음: {str(result)[:200]}')
+                last_err = RuntimeError(f'{base} dlink 없음')
+                continue
+
+            app.logger.info(f'[y2mate] {base} 성공')
+            return dlink, title, dur
+
+        except Exception as e:
+            app.logger.warning(f'[y2mate] {base} 예외: {e}')
+            last_err = e
+
+    raise last_err or RuntimeError('y2mate 모든 미러 실패')
 
 
 _YDL_CLIENTS = [['web'], ['ios'], ['android'], ['web_creator'], ['mweb']]
@@ -619,13 +686,18 @@ def _download_with_ytdlp(yt_url, workdir):
 
 
 def _download_stream_url(stream_url, workdir, title, duration):
-    """pytubefix 스트림 URL 폴백. 브라우저가 아닌 서버가 직접 받아 CORS를 피한다."""
+    """스트림/CDN URL을 서버에서 직접 다운로드한다."""
     import urllib.request
 
-    path = os.path.join(workdir, 'youtube-audio.m4a')
+    # y2mate CDN URL은 YouTube Referer가 오히려 차단을 유발할 수 있어 제거
+    is_yt_cdn = 'googlevideo.com' in stream_url or 'youtube.com' in stream_url
+    referer = 'https://www.youtube.com/' if is_yt_cdn else 'https://www.y2mate.com/'
+
+    ext = 'mp3' if ('y2mate' in stream_url or stream_url.endswith('.mp3')) else 'm4a'
+    path = os.path.join(workdir, f'youtube-audio.{ext}')
     req = urllib.request.Request(stream_url, headers={
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
-        'Referer': 'https://www.youtube.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': referer,
     })
     downloaded = 0
     with urllib.request.urlopen(req, timeout=120) as resp, open(path, 'wb') as out:
