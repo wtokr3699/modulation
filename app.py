@@ -26,6 +26,14 @@ from flask import Flask, jsonify, request, send_file
 
 warnings.simplefilter("ignore")
 
+# pytubefix SSL 인증서 경로 설정 (Linux 환경에서는 자동으로 처리됨)
+try:
+    import certifi as _certifi
+    os.environ.setdefault('SSL_CERT_FILE', _certifi.where())
+    os.environ.setdefault('REQUESTS_CA_BUNDLE', _certifi.where())
+except ImportError:
+    pass
+
 app = Flask(__name__, static_folder='.')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 파일 업로드 최대 50MB
 
@@ -184,6 +192,59 @@ def load_audio_via_ffmpeg(filepath, max_duration=120):
     return y, TARGET_SR
 
 
+# ── YouTube 오디오 추출 엔진 ───────────────────────────────────────────────────
+
+def _try_pytubefix(yt_url):
+    """pytubefix (InnerTube API)로 오디오 스트림 URL 추출."""
+    from pytubefix import YouTube  # 지연 임포트 (서버 시작 속도 유지)
+    yt = YouTube(yt_url)
+    audio = yt.streams.filter(only_audio=True).order_by('abr').last()
+    if not audio:
+        raise RuntimeError("오디오 스트림을 찾을 수 없습니다")
+    return audio.url, yt.title or '유튜브 오디오', int(yt.length or 0)
+
+
+_YDL_CLIENTS = [['ios'], ['android'], ['web_creator'], ['mweb']]
+
+def _try_ytdlp(yt_url):
+    """yt-dlp로 여러 클라이언트를 순차 시도해 오디오 URL 추출."""
+    last_err = None
+    for clients in _YDL_CLIENTS:
+        try:
+            opts = {
+                'format': 'bestaudio[ext=m4a]/bestaudio/best',
+                'quiet': True,
+                'no_warnings': True,
+                'extractor_args': {'youtube': {'player_client': clients}},
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(yt_url, download=False)
+            audio_url = None
+            for f in reversed(info.get('formats', [])):
+                if f.get('acodec') != 'none' and f.get('vcodec') in (None, 'none'):
+                    audio_url = f.get('url')
+                    break
+            if not audio_url:
+                audio_url = info.get('url')
+            if audio_url:
+                return audio_url, info.get('title', '유튜브 오디오'), int(info.get('duration', 0))
+        except Exception as e:
+            last_err = e
+    raise last_err or RuntimeError("yt-dlp 모든 클라이언트 실패")
+
+
+def _extract_yt_audio(yt_url):
+    """pytubefix → yt-dlp 순서로 폴백하며 오디오 스트림 URL 추출."""
+    for name, fn in [('pytubefix', _try_pytubefix), ('yt-dlp', _try_ytdlp)]:
+        try:
+            result = fn(yt_url)
+            app.logger.info(f'YouTube 추출 성공: {name}')
+            return result  # (audio_url, title, duration)
+        except Exception as e:
+            app.logger.warning(f'YouTube 추출 실패 ({name}): {e}')
+    raise RuntimeError("유튜브 영상을 불러올 수 없습니다. URL을 확인하거나 잠시 후 다시 시도해 주세요.")
+
+
 # ── Flask 라우트 ───────────────────────────────────────────────────────────────
 
 @app.errorhandler(413)
@@ -203,7 +264,7 @@ def index():
 
 @app.route('/yt/download', methods=['POST'])
 def yt_download():
-    """YouTube URL → 스트림 URL 추출 (다운로드 없음) → ID + audio_url 반환."""
+    """YouTube URL → 스트림 URL 추출 (다중 엔진 폴백) → ID + audio_url 반환."""
     data = request.get_json(silent=True) or {}
     url = data.get('url', '').strip()
     if not url:
@@ -211,51 +272,16 @@ def yt_download():
     if not is_valid_youtube_url(url):
         return jsonify({'error': '유튜브 URL만 허용됩니다.'}), 400
 
-    ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {
-            'youtube': {'player_client': ['ios', 'tv_embedded']},
-        },
-    }
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)  # 파일 다운로드 없이 URL만 추출
-    except yt_dlp.utils.DownloadError as e:
-        return jsonify({'error': f'다운로드 실패: {str(e)[:200]}'}), 422
+        audio_url, title, duration = _extract_yt_audio(url)
     except Exception as e:
-        return jsonify({'error': f'오류: {str(e)[:200]}'}), 500
-
-    # 오디오 전용 스트림 URL 선택 (화질 없는 오디오 트랙 우선)
-    formats = info.get('formats', [])
-    audio_url = None
-    for f in reversed(formats):
-        if f.get('acodec') != 'none' and f.get('vcodec') in (None, 'none'):
-            audio_url = f.get('url')
-            break
-    if not audio_url:
-        audio_url = info.get('url')
-
-    if not audio_url:
-        return jsonify({'error': '스트림 URL을 추출할 수 없습니다.'}), 500
+        return jsonify({'error': str(e)[:300]}), 422
 
     fid = str(uuid.uuid4())
-    TEMP[fid] = {'stream_url': audio_url, 'title': info.get('title', '유튜브 오디오')}
+    TEMP[fid] = {'stream_url': audio_url, 'title': title}
+    threading.Thread(target=lambda: (time.sleep(600), TEMP.pop(fid, None)), daemon=True).start()
 
-    def cleanup():
-        time.sleep(600)
-        TEMP.pop(fid, None)
-
-    threading.Thread(target=cleanup, daemon=True).start()
-
-    return jsonify({
-        'id': fid,
-        'title': info.get('title', '유튜브 오디오'),
-        'duration': info.get('duration', 0),
-        'audio_url': audio_url,  # 브라우저 직접 fetch용 (Plan A)
-    })
+    return jsonify({'id': fid, 'title': title, 'duration': duration, 'audio_url': audio_url})
 
 
 @app.route('/yt/audio/<fid>')
