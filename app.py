@@ -418,6 +418,75 @@ def _try_cobalt(yt_url):
     return audio_url, '유튜브 오디오', 0
 
 
+def _try_y2mate(yt_url):
+    """y2mate 2단계 API: analyze → convert → 자사 CDN URL 반환.
+    반환 URL이 YouTube CDN이 아닌 y2mate CDN이므로 Render.com IP 제한 우회 가능.
+    """
+    import json
+    import urllib.request as _req
+    import urllib.parse
+
+    hdrs = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': 'https://www.y2mate.com/',
+        'Origin': 'https://www.y2mate.com',
+    }
+
+    # Step 1: 영상 분석 — vid, title, 변환 토큰 획득
+    data1 = urllib.parse.urlencode({
+        'k_query': yt_url,
+        'k_page': 'home',
+        'hl': 'en',
+        'q_auto': '0',
+    }).encode()
+    req1 = _req.Request(
+        'https://www.y2mate.com/mates/analyzeV2/ajax',
+        data=data1, headers=hdrs,
+    )
+    with _req.urlopen(req1, timeout=20) as r:
+        info = json.loads(r.read())
+
+    if info.get('status') != 'Ok':
+        raise RuntimeError(f"y2mate 분석 실패: {info.get('mess') or info.get('status')}")
+
+    vid   = info['vid']
+    title = info.get('title', '유튜브 오디오')
+    dur   = int(info.get('t', 0))
+
+    links_mp3 = info.get('links', {}).get('mp3', {})
+    if not links_mp3:
+        raise RuntimeError('y2mate: MP3 포맷 링크 없음')
+
+    token = None
+    for q in ['mp3128', 'mp3320', 'mp364']:
+        if q in links_mp3:
+            token = links_mp3[q]['k']
+            break
+    if not token:
+        token = next(iter(links_mp3.values()))['k']
+
+    # Step 2: 변환 요청 — dlink (y2mate CDN URL) 획득
+    data2 = urllib.parse.urlencode({'vid': vid, 'k': token}).encode()
+    req2 = _req.Request(
+        'https://www.y2mate.com/mates/convertV2/index',
+        data=data2, headers=hdrs,
+    )
+    with _req.urlopen(req2, timeout=30) as r:
+        result = json.loads(r.read())
+
+    if result.get('c_status') != 'CONVERTED':
+        raise RuntimeError(f"y2mate 변환 실패: {result.get('mess') or result.get('c_status')}")
+
+    dlink = result.get('dlink')
+    if not dlink:
+        raise RuntimeError('y2mate: dlink 없음')
+
+    app.logger.info('[y2mate] 성공')
+    return dlink, title, dur
+
+
 _YDL_CLIENTS = [['web'], ['ios'], ['android'], ['web_creator'], ['mweb']]
 
 
@@ -573,7 +642,7 @@ def _download_stream_url(stream_url, workdir, title, duration):
 
 def _prepare_yt_audio(yt_url):
     """YouTube URL을 서버의 임시 오디오 파일로 준비한다.
-    엔진 순서: yt-dlp → pytubefix → invidious (다중 인스턴스) → cobalt
+    엔진 순서: yt-dlp → pytubefix → invidious (다중 인스턴스) → cobalt → y2mate
     """
     _wait_for_tor_if_needed()
     workdir = tempfile.mkdtemp(prefix='yt_audio_')
@@ -588,11 +657,12 @@ def _prepare_yt_audio(yt_url):
     except Exception as e:
         app.logger.warning(f'YouTube 오디오 준비 실패 (yt-dlp): {e}')
 
-    # 2차: 스트림 URL 추출 후 서버 다운로드 (pytubefix → invidious → cobalt)
+    # 2차: 스트림 URL 추출 후 서버 다운로드 (pytubefix → invidious → cobalt → y2mate)
     for name, fn in [
         ('pytubefix', _try_pytubefix),
         ('invidious',  _try_invidious),
         ('cobalt',     _try_cobalt),
+        ('y2mate',     _try_y2mate),
     ]:
         try:
             audio_url, title, duration = fn(yt_url)
@@ -607,7 +677,7 @@ def _prepare_yt_audio(yt_url):
     shutil.rmtree(workdir, ignore_errors=True)
     raise RuntimeError(
         "유튜브 영상을 불러올 수 없습니다. "
-        "yt-dlp, pytubefix, Invidious, Cobalt 모두 실패했습니다. "
+        "yt-dlp, pytubefix, Invidious, Cobalt, y2mate 모두 실패했습니다. "
         "파일을 직접 업로드해 주세요."
     )
 
