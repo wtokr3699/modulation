@@ -334,6 +334,90 @@ def _try_pytubefix(yt_url):
     return audio.url, yt.title or '유튜브 오디오', int(yt.length or 0)
 
 
+# ── YouTube 우회 엔진 2: Invidious ───────────────────────────────────────────
+_INVIDIOUS_INSTANCES = [
+    'https://invidious.privacyredirect.com',
+    'https://iv.datura.network',
+    'https://invidious.fdn.fr',
+    'https://inv.tux.pizza',
+    'https://invidious.nerdvpn.de',
+    'https://invidious.io',
+]
+
+_YT_VIDEO_ID_RE = re.compile(
+    r'(?:v=|youtu\.be/|embed/|shorts/)([a-zA-Z0-9_-]{11})'
+)
+
+
+def _extract_video_id(yt_url):
+    m = _YT_VIDEO_ID_RE.search(yt_url)
+    if not m:
+        raise RuntimeError('YouTube 동영상 ID를 추출할 수 없습니다')
+    return m.group(1)
+
+
+def _try_invidious(yt_url):
+    """Invidious 오픈소스 프론트엔드 공개 인스턴스로 오디오 URL 추출."""
+    import json
+    import urllib.request as _req
+    video_id = _extract_video_id(yt_url)
+    last_err = None
+    for base in _INVIDIOUS_INSTANCES:
+        try:
+            req = _req.Request(
+                f'{base}/api/v1/videos/{video_id}',
+                headers={'User-Agent': 'Mozilla/5.0'},
+            )
+            with _req.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+            title    = data.get('title', '유튜브 오디오')
+            duration = int(data.get('lengthSeconds', 0))
+            formats  = [f for f in data.get('adaptiveFormats', [])
+                        if f.get('type', '').startswith('audio/')]
+            if not formats:
+                raise RuntimeError('오디오 스트림 없음')
+            formats.sort(key=lambda f: int(f.get('bitrate', 0)), reverse=True)
+            audio_url = formats[0]['url']
+            app.logger.info(f'[invidious] {base} 성공')
+            return audio_url, title, duration
+        except Exception as e:
+            app.logger.warning(f'[invidious] {base} 실패: {e}')
+            last_err = e
+    raise last_err or RuntimeError('Invidious 모든 인스턴스 실패')
+
+
+# ── YouTube 우회 엔진 3: Cobalt ───────────────────────────────────────────────
+
+def _try_cobalt(yt_url):
+    """cobalt.tools 공개 API로 오디오 URL 추출."""
+    import json
+    import urllib.request as _req
+    payload = json.dumps({
+        'url': yt_url,
+        'downloadMode': 'audio',
+        'audioFormat': 'best',
+    }).encode()
+    req = _req.Request(
+        'https://api.cobalt.tools/',
+        data=payload,
+        headers={
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+        }
+    )
+    with _req.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read())
+    status = data.get('status')
+    if status not in ('tunnel', 'stream', 'redirect'):
+        code = data.get('error', {}).get('code', '') or str(data)
+        raise RuntimeError(f'cobalt 응답 오류: {code}')
+    audio_url = data.get('url')
+    if not audio_url:
+        raise RuntimeError('cobalt URL 없음')
+    app.logger.info('[cobalt] 성공')
+    return audio_url, '유튜브 오디오', 0
+
+
 _YDL_CLIENTS = [['web'], ['ios'], ['android'], ['web_creator'], ['mweb']]
 
 
@@ -488,40 +572,42 @@ def _download_stream_url(stream_url, workdir, title, duration):
 
 
 def _prepare_yt_audio(yt_url):
-    """YouTube URL을 서버의 임시 오디오 파일로 준비한다."""
+    """YouTube URL을 서버의 임시 오디오 파일로 준비한다.
+    엔진 순서: yt-dlp → pytubefix → invidious (다중 인스턴스) → cobalt
+    """
     _wait_for_tor_if_needed()
     workdir = tempfile.mkdtemp(prefix='yt_audio_')
-    engines = [('yt-dlp', lambda url: _download_with_ytdlp(url, workdir))]
 
-    for name, fn in engines:
+    # 1차: yt-dlp (서버 직접 다운로드, Tor 프록시 포함)
+    try:
+        path, title, duration = _download_with_ytdlp(yt_url, workdir)
+        if duration > YT_MAX_DURATION_SECONDS:
+            raise RuntimeError(f"영상이 너무 깁니다. 최대 {YT_MAX_DURATION_SECONDS // 60}분까지 지원합니다.")
+        app.logger.info('YouTube 오디오 준비 성공: yt-dlp')
+        return path, title, duration, workdir
+    except Exception as e:
+        app.logger.warning(f'YouTube 오디오 준비 실패 (yt-dlp): {e}')
+
+    # 2차: 스트림 URL 추출 후 서버 다운로드 (pytubefix → invidious → cobalt)
+    for name, fn in [
+        ('pytubefix', _try_pytubefix),
+        ('invidious',  _try_invidious),
+        ('cobalt',     _try_cobalt),
+    ]:
         try:
-            path, title, duration = fn(yt_url)
-            if duration > YT_MAX_DURATION_SECONDS:
-                raise RuntimeError(
-                    f"영상이 너무 깁니다. 최대 {YT_MAX_DURATION_SECONDS // 60}분까지 지원합니다."
-                )
+            audio_url, title, duration = fn(yt_url)
+            if duration > 0 and duration > YT_MAX_DURATION_SECONDS:
+                raise RuntimeError(f"영상이 너무 깁니다. 최대 {YT_MAX_DURATION_SECONDS // 60}분까지 지원합니다.")
+            path, title, duration = _download_stream_url(audio_url, workdir, title, duration)
             app.logger.info(f'YouTube 오디오 준비 성공: {name}')
             return path, title, duration, workdir
         except Exception as e:
             app.logger.warning(f'YouTube 오디오 준비 실패 ({name}): {e}')
 
-    try:
-        stream_url, title, duration = _try_pytubefix(yt_url)
-        if duration > YT_MAX_DURATION_SECONDS:
-            raise RuntimeError(
-                f"영상이 너무 깁니다. 최대 {YT_MAX_DURATION_SECONDS // 60}분까지 지원합니다."
-            )
-        path, title, duration = _download_stream_url(stream_url, workdir, title, duration)
-        app.logger.info('YouTube 오디오 준비 성공: pytubefix')
-        return path, title, duration, workdir
-    except Exception as e:
-        app.logger.warning(f'YouTube 오디오 준비 실패 (pytubefix): {e}')
-        shutil.rmtree(workdir, ignore_errors=True)
-
+    shutil.rmtree(workdir, ignore_errors=True)
     raise RuntimeError(
-        "유튜브 영상을 불러올 수 없습니다.\n"
-        "서버 IP가 YouTube에 차단되어 있습니다. "
-        "관리자에게 YouTube 쿠키 설정을 요청하거나, "
+        "유튜브 영상을 불러올 수 없습니다. "
+        "yt-dlp, pytubefix, Invidious, Cobalt 모두 실패했습니다. "
         "파일을 직접 업로드해 주세요."
     )
 
