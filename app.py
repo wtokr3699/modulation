@@ -192,11 +192,57 @@ def load_audio_via_ffmpeg(filepath, max_duration=120):
     return y, TARGET_SR
 
 
+# ── YouTube 쿠키 설정 ─────────────────────────────────────────────────────────
+# Render.com 등 클라우드 서버 IP는 YouTube 봇 차단 대상. 실제 계정 쿠키로 우회.
+# 설정 방법 (우선순위 순):
+#   1. 서버 파일: ./cookies.txt  (로컬 개발용)
+#   2. 환경변수:  YT_COOKIES_PATH = "/etc/yt-cookies.txt"  (Render Secret Files)
+#   3. 환경변수:  YT_COOKIES = "<cookies.txt 내용 전체>"    (Render 환경변수)
+
+_YT_COOKIES_LOCK = threading.Lock()
+_YT_COOKIES_FILE_CACHE = None
+
+
+def _get_yt_cookies():
+    """사용 가능한 YouTube 쿠키 파일 경로 반환. 없으면 None."""
+    global _YT_COOKIES_FILE_CACHE
+
+    # 1. 로컬 파일
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+    if os.path.exists(local):
+        return local
+
+    # 2. 파일 경로 환경변수 (Render.com Secret Files 권장)
+    env_path = os.environ.get('YT_COOKIES_PATH', '').strip()
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    # 3. 쿠키 내용 환경변수 → 임시 파일로 저장 (최초 1회)
+    cookie_content = os.environ.get('YT_COOKIES', '').strip()
+    if cookie_content:
+        with _YT_COOKIES_LOCK:
+            if _YT_COOKIES_FILE_CACHE is None:
+                try:
+                    import base64
+                    content = base64.b64decode(cookie_content).decode()
+                except Exception:
+                    content = cookie_content
+                tmp = tempfile.NamedTemporaryFile(
+                    mode='w', suffix='.txt', delete=False, prefix='yt_cookies_'
+                )
+                tmp.write(content)
+                tmp.close()
+                _YT_COOKIES_FILE_CACHE = tmp.name
+        return _YT_COOKIES_FILE_CACHE
+
+    return None
+
+
 # ── YouTube 오디오 추출 엔진 ───────────────────────────────────────────────────
 
 def _try_pytubefix(yt_url):
     """pytubefix (InnerTube API)로 오디오 스트림 URL 추출."""
-    from pytubefix import YouTube  # 지연 임포트 (서버 시작 속도 유지)
+    from pytubefix import YouTube
     yt = YouTube(yt_url)
     audio = yt.streams.filter(only_audio=True).order_by('abr').last()
     if not audio:
@@ -206,8 +252,10 @@ def _try_pytubefix(yt_url):
 
 _YDL_CLIENTS = [['ios'], ['android'], ['web_creator'], ['mweb']]
 
+
 def _try_ytdlp(yt_url):
-    """yt-dlp로 여러 클라이언트를 순차 시도해 오디오 URL 추출."""
+    """yt-dlp로 여러 클라이언트를 순차 시도해 오디오 URL 추출. 쿠키 있으면 사용."""
+    cookies_file = _get_yt_cookies()
     last_err = None
     for clients in _YDL_CLIENTS:
         try:
@@ -217,6 +265,8 @@ def _try_ytdlp(yt_url):
                 'no_warnings': True,
                 'extractor_args': {'youtube': {'player_client': clients}},
             }
+            if cookies_file:
+                opts['cookiefile'] = cookies_file
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(yt_url, download=False)
             audio_url = None
@@ -234,15 +284,29 @@ def _try_ytdlp(yt_url):
 
 
 def _extract_yt_audio(yt_url):
-    """pytubefix → yt-dlp 순서로 폴백하며 오디오 스트림 URL 추출."""
-    for name, fn in [('pytubefix', _try_pytubefix), ('yt-dlp', _try_ytdlp)]:
+    """쿠키 유무에 따라 최적 엔진을 선택해 오디오 스트림 URL 추출."""
+    cookies_file = _get_yt_cookies()
+
+    # 쿠키가 있으면 yt-dlp+cookies가 가장 신뢰성 높음 → 먼저 시도
+    if cookies_file:
+        engines = [('yt-dlp+cookies', _try_ytdlp), ('pytubefix', _try_pytubefix)]
+    else:
+        engines = [('pytubefix', _try_pytubefix), ('yt-dlp', _try_ytdlp)]
+
+    for name, fn in engines:
         try:
             result = fn(yt_url)
             app.logger.info(f'YouTube 추출 성공: {name}')
-            return result  # (audio_url, title, duration)
+            return result
         except Exception as e:
             app.logger.warning(f'YouTube 추출 실패 ({name}): {e}')
-    raise RuntimeError("유튜브 영상을 불러올 수 없습니다. URL을 확인하거나 잠시 후 다시 시도해 주세요.")
+
+    raise RuntimeError(
+        "유튜브 영상을 불러올 수 없습니다.\n"
+        "서버 IP가 YouTube에 차단되어 있습니다. "
+        "관리자에게 YouTube 쿠키 설정을 요청하거나, "
+        "파일을 직접 업로드해 주세요."
+    )
 
 
 # ── Flask 라우트 ───────────────────────────────────────────────────────────────
@@ -399,5 +463,7 @@ if __name__ == '__main__':
     print('=' * 52)
     print('  반음 전조 도구 + 음악 분석 서버 시작')
     print('  http://localhost:5000 을 브라우저에서 열어주세요')
+    ck = _get_yt_cookies()
+    print(f'  YouTube 쿠키: {"✅ " + ck if ck else "❌ 미설정 (YouTube 차단될 수 있음)"}')
     print('=' * 52)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
