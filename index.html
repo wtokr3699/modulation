@@ -23,6 +23,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>반음 전조 도구</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.0/lame.min.js"></script>
 <style>
   :root {
     --accent: #4f46e5;
@@ -269,6 +270,72 @@
   .cold-desc { font-size: .875rem; color: var(--text-muted); line-height: 1.75; margin-bottom: 16px; }
   .cold-timer { font-size: .8rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
+  /* ── 현재 코드 실시간 표시 ── */
+  .live-chord {
+    text-align: center; margin-bottom: 16px;
+    padding: 14px 12px; background: var(--accent-bg);
+    border-radius: 10px; border: 1.5px solid var(--accent-light);
+  }
+  .live-chord-label {
+    font-size: .65rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--text-muted); margin-bottom: 6px;
+  }
+  .live-chord-name {
+    font-size: 2.8rem; font-weight: 800; color: var(--accent);
+    line-height: 1; letter-spacing: -1px;
+  }
+  .live-chord-numeral { font-size: .9rem; color: var(--text-muted); margin-top: 4px; }
+
+  /* ── 내보내기 옵션 ── */
+  .export-options { margin-bottom: 16px; }
+  .export-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .export-option-label {
+    font-size: .78rem; color: var(--text-muted); min-width: 32px; font-weight: 500;
+  }
+  .fmt-btns, .quality-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .fmt-btn, .qty-btn {
+    padding: 5px 12px; border-radius: 20px; border: 1.5px solid var(--border);
+    background: transparent; font-size: .8rem; font-weight: 600;
+    color: var(--text-muted); cursor: pointer; transition: all .15s;
+  }
+  .fmt-btn:hover, .qty-btn:hover {
+    border-color: var(--accent-light); color: var(--accent); background: var(--accent-bg);
+  }
+  .fmt-btn.active, .qty-btn.active {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+
+  /* ── 줄기 분리 ── */
+  .stem-btn {
+    width: 100%; padding: 11px; border-radius: 10px; border: 1.5px dashed var(--border);
+    background: transparent; font-size: .9rem; font-weight: 600; color: var(--text-muted);
+    cursor: pointer; transition: all .15s; display: flex; align-items: center;
+    justify-content: center; gap: 8px; margin-bottom: 12px;
+  }
+  .stem-btn:hover { border-color: var(--accent-light); color: var(--accent); background: var(--accent-bg); }
+  .stem-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .stem-rows { display: none; }
+  .stem-rows.show { display: block; }
+  .stem-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .stem-label { font-size: .82rem; font-weight: 600; min-width: 78px; color: var(--text); }
+  .stem-slider-wrap { flex: 1; }
+  input.stem-slider {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 5px;
+    border-radius: 3px; outline: none; cursor: pointer;
+    background: linear-gradient(to right, var(--accent) var(--pct, 100%), var(--border) var(--pct, 100%));
+  }
+  input.stem-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%;
+    background: var(--accent); border: 2px solid #fff;
+    box-shadow: 0 0 0 1px var(--accent-light); cursor: pointer;
+  }
+  input.stem-slider::-moz-range-thumb {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--accent); border: 2px solid #fff; cursor: pointer;
+  }
+  .stem-pct { font-size: .75rem; color: var(--text-muted); min-width: 34px; text-align: right; }
+  .stem-status { font-size: .8rem; color: var(--text-muted); margin-top: 6px; min-height: 1.2em; }
+
   @media (max-width: 420px) {
     .pitch-value { font-size: 1.4rem; }
     .presets { gap: 4px; }
@@ -285,9 +352,9 @@
 <div id="coldStartOverlay" class="cold-overlay hidden">
   <div class="cold-box">
     <div class="cold-spinner"></div>
-    <div class="cold-emoji">😴 ➡️ ☀️</div>
-    <div class="cold-title">서버가 잠에서 깨어나는 중이에요</div>
-    <div class="cold-desc">
+    <div class="cold-emoji" id="coldEmoji">😴 ➡️ ☀️</div>
+    <div class="cold-title" id="coldTitle">서버가 잠에서 깨어나는 중이에요</div>
+    <div class="cold-desc" id="coldDesc">
       이 서비스는 <strong>무료로 운영</strong>되고 있어서<br>
       일정 시간 사용하지 않으면 서버가 절전 모드로 전환됩니다.<br><br>
       처음 접속 시 <strong>최대 1분</strong> 정도 소요될 수 있어요.<br>
@@ -397,9 +464,40 @@
     </div>
   </div>
 
+  <!-- 2.5 줄기 분리 -->
+  <div class="card hidden" id="stemCard">
+    <div class="card-title">줄기 분리 (멜로디 / 드럼)</div>
+    <button class="stem-btn" id="stemBtn">
+      <span id="stemBtnLabel">🎛 줄기 분리 시작</span>
+      <span class="spinner-dark hidden" id="stemSpinner"></span>
+    </button>
+    <div class="stem-rows" id="stemRows">
+      <div class="stem-row">
+        <span class="stem-label">멜로디/화음</span>
+        <div class="stem-slider-wrap">
+          <input type="range" class="stem-slider" id="stemSliderH" min="0" max="100" value="100">
+        </div>
+        <span class="stem-pct" id="stemPctH">100%</span>
+      </div>
+      <div class="stem-row">
+        <span class="stem-label">드럼/리듬</span>
+        <div class="stem-slider-wrap">
+          <input type="range" class="stem-slider" id="stemSliderP" min="0" max="100" value="100">
+        </div>
+        <span class="stem-pct" id="stemPctP">100%</span>
+      </div>
+    </div>
+    <div class="stem-status" id="stemStatus"></div>
+  </div>
+
   <!-- 4. 재생 -->
   <div class="card">
     <div class="card-title">미리듣기</div>
+    <div id="liveChordDisplay" class="live-chord hidden">
+      <div class="live-chord-label">현재 코드</div>
+      <div class="live-chord-name" id="liveChordName">–</div>
+      <div class="live-chord-numeral" id="liveChordNumeral"></div>
+    </div>
     <div class="playback-row">
       <button class="play-btn" id="playBtn" disabled title="재생">▶</button>
       <div style="flex:1">
@@ -414,9 +512,27 @@
   <!-- 5. 다운로드 -->
   <div class="card">
     <div class="card-title">내보내기</div>
+    <div class="export-options">
+      <div class="export-row">
+        <span class="export-option-label">형식</span>
+        <div class="fmt-btns">
+          <button class="fmt-btn active" data-fmt="wav">WAV</button>
+          <button class="fmt-btn" data-fmt="mp3">MP3</button>
+        </div>
+      </div>
+      <div class="export-row">
+        <span class="export-option-label">품질</span>
+        <div class="quality-btns">
+          <button class="qty-btn active" data-qty="high">원본</button>
+          <button class="qty-btn" data-qty="med">중간</button>
+          <button class="qty-btn" data-qty="low">저용량</button>
+          <button class="qty-btn" data-qty="min">최저</button>
+        </div>
+      </div>
+    </div>
     <button class="export-btn" id="exportBtn" disabled>
       <span id="exportIcon">💾</span>
-      <span id="exportLabel">전조된 파일 다운로드</span>
+      <span id="exportLabel">다운로드</span>
       <span class="spinner hidden" id="exportSpinner"></span>
     </button>
     <div class="export-status" id="exportStatus"></div>
@@ -449,8 +565,21 @@ const state = {
   rafId: null,
   toneReady: false,
   // 분석 결과
-  chords: [],          // [{time, chord, numeral}, ...]
-  lastChordTime: -1,   // 마지막으로 하이라이트한 코드 time
+  chords: [],
+  lastChordTime: -1,
+  // 줄기 분리
+  stemsLoaded: false,
+  stemFid: null,
+  sourceFile: null,
+  toneBufferH: null,
+  toneBufferP: null,
+  playerH: null,
+  playerP: null,
+  stemGainH: null,
+  stemGainP: null,
+  // 내보내기 옵션
+  exportFmt: 'wav',
+  exportQty: 'high',
 };
 
 // ── DOM refs ──
@@ -486,6 +615,19 @@ const exportLabel   = $('exportLabel');
 const exportIcon    = $('exportIcon');
 const exportSpinner = $('exportSpinner');
 const exportStatus  = $('exportStatus');
+const liveChordDisplay = $('liveChordDisplay');
+const liveChordName    = $('liveChordName');
+const liveChordNumeral = $('liveChordNumeral');
+const stemCard         = $('stemCard');
+const stemBtn          = $('stemBtn');
+const stemBtnLabel     = $('stemBtnLabel');
+const stemSpinner      = $('stemSpinner');
+const stemRows         = $('stemRows');
+const stemSliderH      = $('stemSliderH');
+const stemSliderP      = $('stemSliderP');
+const stemPctH         = $('stemPctH');
+const stemPctP         = $('stemPctP');
+const stemStatus       = $('stemStatus');
 
 // ── 서버 모드 감지 ──
 const IS_SERVER = window.location.protocol === 'http:' || window.location.protocol === 'https:';
@@ -496,7 +638,21 @@ if (!IS_SERVER) {
 // ── Cold Start 오버레이 ──
 let _coldTimerInterval = null;
 
-function showColdStartOverlay() {
+const DEFAULT_OVERLAY = {
+  emoji: '😴 ➡️ ☀️',
+  title: '서버가 잠에서 깨어나는 중이에요',
+  desc: '이 서비스는 <strong>무료로 운영</strong>되고 있어서<br>일정 시간 사용하지 않으면 서버가 절전 모드로 전환됩니다.<br><br>처음 접속 시 <strong>최대 1분</strong> 정도 소요될 수 있어요.<br>잠시만 기다려 주시면 정상적으로 이용하실 수 있습니다 🙏',
+};
+
+function setOverlayContent(config = {}) {
+  const content = { ...DEFAULT_OVERLAY, ...config };
+  $('coldEmoji').textContent = content.emoji;
+  $('coldTitle').textContent = content.title;
+  $('coldDesc').innerHTML = content.desc;
+}
+
+function showColdStartOverlay(config = {}) {
+  setOverlayContent(config);
   const overlay = $('coldStartOverlay');
   if (!overlay.classList.contains('hidden')) return;
   overlay.classList.remove('hidden');
@@ -512,15 +668,33 @@ function hideColdStartOverlay() {
   clearInterval(_coldTimerInterval);
   _coldTimerInterval = null;
   $('coldTimer').textContent = '잠시만요... 0초';
+  setOverlayContent();
 }
 
-async function fetchWithColdStart(url, options = {}) {
-  const timer = setTimeout(showColdStartOverlay, 3000);
+async function fetchWithColdStart(url, options = {}, config = {}) {
+  const {
+    overlayDelay = 3000,
+    timeoutMs = 90000,
+    timeoutMessage = '요청 시간이 너무 오래 걸립니다. 잠시 후 다시 시도해 주세요.',
+    overlay = {},
+  } = config;
+  const controller = new AbortController();
+  const callerSignal = options.signal;
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  const timer = setTimeout(() => showColdStartOverlay(overlay), overlayDelay);
+  const timeout = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
-    const res = await fetch(url, options);
+    const res = await fetch(url, { ...options, signal: controller.signal });
     return res;
+  } catch (e) {
+    if (controller.signal.aborted) throw new Error(timeoutMessage);
+    throw e;
   } finally {
     clearTimeout(timer);
+    clearTimeout(timeout);
     hideColdStartOverlay();
   }
 }
@@ -528,11 +702,13 @@ async function fetchWithColdStart(url, options = {}) {
 // 페이지 로드 후 서버 상태 자동 체크 (서버 모드일 때만)
 if (IS_SERVER) {
   setTimeout(async () => {
-    const timer = setTimeout(showColdStartOverlay, 2000);
     try {
-      await fetch('/health', { signal: AbortSignal.timeout(70000) });
+      await fetchWithColdStart('/health', {}, {
+        overlayDelay: 2000,
+        timeoutMs: 70000,
+        timeoutMessage: '서버 응답이 지연되고 있습니다. 잠시 후 새로고침해 주세요.',
+      });
     } catch (_) { /* 오류 무시 */ } finally {
-      clearTimeout(timer);
       hideColdStartOverlay();
     }
   }, 500);
@@ -596,21 +772,40 @@ async function ensureTone() {
 function teardownTone() {
   stopPlayback();
   if (state.player)    { state.player.dispose();    state.player    = null; }
+  if (state.playerH)   { state.playerH.dispose();   state.playerH   = null; }
+  if (state.playerP)   { state.playerP.dispose();   state.playerP   = null; }
+  if (state.stemGainH) { state.stemGainH.dispose();  state.stemGainH = null; }
+  if (state.stemGainP) { state.stemGainP.dispose();  state.stemGainP = null; }
   if (state.pitchShift){ state.pitchShift.dispose(); state.pitchShift = null; }
 }
 
 function setupToneGraph() {
   teardownTone();
   state.pitchShift = new Tone.PitchShift({ pitch: state.semitones, windowSize: 0.1 });
-  state.player = new Tone.Player(state.toneBuffer);
-  state.player.connect(state.pitchShift);
   state.pitchShift.toDestination();
-  state.player.loop = false;
-  state.player.onstop = () => { if (state.isPlaying) onPlaybackEnded(); };
+
+  if (state.stemsLoaded && state.toneBufferH && state.toneBufferP) {
+    state.stemGainH = new Tone.Gain(parseInt(stemSliderH.value) / 100);
+    state.stemGainP = new Tone.Gain(parseInt(stemSliderP.value) / 100);
+    state.stemGainH.connect(state.pitchShift);
+    state.stemGainP.connect(state.pitchShift);
+    state.playerH = new Tone.Player(state.toneBufferH);
+    state.playerP = new Tone.Player(state.toneBufferP);
+    state.playerH.connect(state.stemGainH);
+    state.playerP.connect(state.stemGainP);
+    state.playerH.loop = false;
+    state.playerP.loop = false;
+    state.playerH.onstop = () => { if (state.isPlaying) onPlaybackEnded(); };
+  } else {
+    state.player = new Tone.Player(state.toneBuffer);
+    state.player.connect(state.pitchShift);
+    state.player.loop = false;
+    state.player.onstop = () => { if (state.isPlaying) onPlaybackEnded(); };
+  }
 }
 
 // ── 공통 오디오 버퍼 로드 ──
-async function loadAudioBuffer(arrayBuffer, displayName) {
+async function loadAudioBuffer(arrayBuffer, displayName, ytFileId = null) {
   const actx = new AudioContext();
   const decoded = await actx.decodeAudioData(arrayBuffer);
   actx.close();
@@ -622,15 +817,39 @@ async function loadAudioBuffer(arrayBuffer, displayName) {
   state.chords     = [];
   state.lastChordTime = -1;
 
+  // 줄기 분리 상태 초기화
+  state.stemFid     = ytFileId;
+  state.stemsLoaded = false;
+  state.toneBufferH = null;
+  state.toneBufferP = null;
+  if (ytFileId) state.sourceFile = null;
+
   setupToneGraph();
 
   fileInfo.classList.add('show');
-  fileName.textContent    = displayName;
+  fileName.textContent     = displayName;
   fileDuration.textContent = `재생 시간: ${fmtTime(decoded.duration)}`;
   playBtn.disabled   = false;
   exportBtn.disabled = false;
   updateTimeDisplay(0);
   state.seekOffset = 0;
+  liveChordDisplay.classList.add('hidden');
+
+  // 줄기 카드 초기화
+  if (IS_SERVER) {
+    stemCard.classList.remove('hidden');
+    stemRows.classList.remove('show');
+    stemStatus.textContent = '';
+    stemBtnLabel.textContent = '🎛 줄기 분리 시작';
+    stemBtn.disabled = false;
+    stemSpinner.classList.add('hidden');
+    stemSliderH.value = 100;
+    stemSliderP.value = 100;
+    stemPctH.textContent = '100%';
+    stemPctP.textContent = '100%';
+    stemSliderH.style.setProperty('--pct', '100%');
+    stemSliderP.style.setProperty('--pct', '100%');
+  }
 
   // 분석 패널 초기화
   if (IS_SERVER) {
@@ -659,7 +878,16 @@ async function triggerAnalysis(file = null, fileId = null) {
       return;
     }
 
-    const res  = await fetchWithColdStart('/analyze', { method: 'POST', headers, body });
+    const res  = await fetchWithColdStart('/analyze', { method: 'POST', headers, body }, {
+      overlayDelay: 5000,
+      timeoutMs: 120000,
+      timeoutMessage: '음악 분석이 2분을 넘겼습니다. 더 짧은 음원으로 다시 시도해 주세요.',
+      overlay: {
+        emoji: '📊',
+        title: '음악을 분석하는 중이에요',
+        desc: 'BPM, 조성, 코드 진행을 계산하고 있습니다.<br><br>무료 서버에서는 음원 길이에 따라 시간이 걸릴 수 있어요.<br><strong>2분</strong>을 넘기면 자동으로 중단됩니다.',
+      },
+    });
     const data = await res.json();
 
     if (!res.ok || data.error) throw new Error(data.error || '분석 실패');
@@ -696,7 +924,6 @@ function renderChordTimeline(chords) {
 function highlightCurrentChord(t) {
   if (!state.chords.length) return;
 
-  // 현재 시간에 해당하는 코드 (findLast 폴리필 포함)
   let current = null;
   for (let i = state.chords.length - 1; i >= 0; i--) {
     if (state.chords[i].time <= t) { current = state.chords[i]; break; }
@@ -710,6 +937,8 @@ function highlightCurrentChord(t) {
     active.classList.add('active');
     active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
   }
+  liveChordName.textContent    = current.chord;
+  liveChordNumeral.textContent = current.numeral;
 }
 
 // ── 파일 업로드 ──
@@ -726,6 +955,7 @@ async function handleFile(file) {
     const arrayBuf    = await file.arrayBuffer();
     const displayName = file.name.replace(/\.[^.]+$/, '');
     await loadAudioBuffer(arrayBuf, displayName);
+    state.sourceFile = file;
     fileIcon.textContent = '🎵';
     dropZone.style.borderColor = 'var(--accent-light)';
 
@@ -762,6 +992,15 @@ async function loadFromYouTube() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
+    }, {
+      overlayDelay: 4000,
+      timeoutMs: 90000,
+      timeoutMessage: 'YouTube 오디오 준비가 90초를 넘겼습니다. 서버가 YouTube에 막혔거나 영상 응답이 느린 상태입니다. 잠시 후 다시 시도하거나 파일 업로드를 이용해 주세요.',
+      overlay: {
+        emoji: '🎵',
+        title: 'YouTube 오디오를 준비하는 중이에요',
+        desc: '서버가 YouTube에서 오디오를 가져와 변환하고 있습니다.<br><br>무료 서버에서는 영상 상태와 YouTube 응답에 따라 시간이 걸릴 수 있어요.<br><strong>90초</strong>를 넘기면 자동으로 중단됩니다.',
+      },
     });
     const dlData = await dlRes.json();
     if (!dlRes.ok || dlData.error) throw new Error(dlData.error || '정보 가져오기 실패');
@@ -769,7 +1008,16 @@ async function loadFromYouTube() {
     setYtStatus('🎵 오디오 불러오는 중...');
 
     // Step 2: 같은 출처의 서버 캐시 파일만 읽는다. YouTube CDN 직접 fetch는 CORS로 막힌다.
-    const audioRes = await fetchWithColdStart(`/yt/audio/${dlData.id}`);
+    const audioRes = await fetchWithColdStart(`/yt/audio/${dlData.id}`, {}, {
+      overlayDelay: 4000,
+      timeoutMs: 60000,
+      timeoutMessage: '오디오 파일 수신이 1분을 넘겼습니다. 다시 시도해 주세요.',
+      overlay: {
+        emoji: '🎧',
+        title: '오디오 파일을 불러오는 중이에요',
+        desc: '서버에 준비된 오디오를 브라우저로 가져오고 있습니다.<br><br>네트워크 상태나 파일 크기에 따라 잠시 걸릴 수 있어요.',
+      },
+    });
     if (!audioRes.ok) {
       const message = await audioRes.text().catch(() => '');
       throw new Error(message || '오디오 파일을 가져올 수 없습니다.');
@@ -777,7 +1025,7 @@ async function loadFromYouTube() {
     const arrayBuf = await audioRes.arrayBuffer();
 
     const title = dlData.title || '유튜브 오디오';
-    await loadAudioBuffer(arrayBuf, title);
+    await loadAudioBuffer(arrayBuf, title, dlData.id);
     fileIcon.textContent   = '▶️';
     fileName.textContent   = title;
     setYtStatus(`✅ "${title}" 로드 완료`, 'success');
@@ -822,7 +1070,9 @@ function stopPlayback() {
   if (state.isPlaying) {
     state.seekOffset = Math.min(currentPlayTime(), state.duration);
     state.isPlaying  = false;
-    if (state.player && state.player.state === 'started') state.player.stop();
+    if (state.playerH && state.playerH.state === 'started') state.playerH.stop();
+    if (state.playerP && state.playerP.state === 'started') state.playerP.stop();
+    if (state.player  && state.player.state  === 'started') state.player.stop();
     cancelAnimationFrame(state.rafId);
     playBtn.textContent = '▶';
   }
@@ -836,10 +1086,13 @@ function onPlaybackEnded() {
   playBtn.textContent = '▶';
   updateTimeDisplay(0);
   document.querySelectorAll('.chord-chip').forEach(el => el.classList.remove('active'));
+  liveChordDisplay.classList.add('hidden');
+  liveChordName.textContent    = '–';
+  liveChordNumeral.textContent = '';
 }
 
 async function togglePlay() {
-  if (!state.toneBuffer) return;
+  if (!state.toneBuffer && !state.toneBufferH) return;
   await ensureTone();
   if (state.isPlaying) { stopPlayback(); return; }
   if (state.seekOffset >= state.duration - 0.05) state.seekOffset = 0;
@@ -849,8 +1102,16 @@ async function togglePlay() {
   state.playStartedAt = Tone.now();
   playBtn.textContent = '⏸';
 
+  if (state.chords.length) liveChordDisplay.classList.remove('hidden');
+
   try {
-    state.player.start(Tone.now(), state.seekOffset);
+    const offset = state.seekOffset;
+    if (state.stemsLoaded && state.playerH && state.playerP) {
+      state.playerH.start(Tone.now(), offset);
+      state.playerP.start(Tone.now(), offset);
+    } else {
+      state.player.start(Tone.now(), offset);
+    }
     startRaf();
   } catch (e) {
     console.error(e);
@@ -907,9 +1168,60 @@ function encodeWAV(audioBuffer) {
   return new Uint8Array(buf);
 }
 
+// ── 내보내기 품질 설정 ──
+const WAV_SAMPLE_RATES = { high: null, med: 22050, low: 16000, min: 8000 };
+const MP3_BITRATES     = { high: 320,  med: 192,   low: 128,   min: 48  };
+
+async function resampleBuffer(buffer, targetSR) {
+  if (!targetSR || buffer.sampleRate === targetSR) return buffer;
+  const ch  = buffer.numberOfChannels;
+  const len = Math.ceil(buffer.duration * targetSR);
+  const offCtx = new OfflineAudioContext(ch, len, targetSR);
+  const src = offCtx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(offCtx.destination);
+  src.start(0);
+  return offCtx.startRendering();
+}
+
+function encodeMp3(audioBuffer, bitrate) {
+  const numCh = Math.min(audioBuffer.numberOfChannels, 2);
+  const sr = audioBuffer.sampleRate;
+  const mp3enc = new lamejs.Mp3Encoder(numCh, sr, bitrate);
+
+  const toInt16 = data => {
+    const buf = new Int16Array(data.length);
+    for (let i = 0; i < data.length; i++) {
+      const s = Math.max(-1, Math.min(1, data[i]));
+      buf[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return buf;
+  };
+
+  const left16  = toInt16(audioBuffer.getChannelData(0));
+  const right16 = numCh > 1 ? toInt16(audioBuffer.getChannelData(1)) : left16;
+  const blockSize = 1152;
+  const chunks = [];
+
+  for (let i = 0; i < left16.length; i += blockSize) {
+    const enc = mp3enc.encodeBuffer(left16.subarray(i, i + blockSize), right16.subarray(i, i + blockSize));
+    if (enc.length > 0) chunks.push(new Uint8Array(enc));
+  }
+  const flushed = mp3enc.flush();
+  if (flushed.length > 0) chunks.push(new Uint8Array(flushed));
+
+  const total = chunks.reduce((a, c) => a + c.length, 0);
+  const result = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { result.set(c, off); off += c.length; }
+  return result;
+}
+
 // ── 내보내기 ──
-async function exportWAV() {
-  if (!state.rawBuffer) return;
+async function exportAudio() {
+  if (!state.rawBuffer && !state.toneBufferH) return;
+  const fmt = state.exportFmt;
+  const qty = state.exportQty;
   const wasPlaying = state.isPlaying;
   if (wasPlaying) stopPlayback();
 
@@ -917,40 +1229,66 @@ async function exportWAV() {
   exportIcon.classList.add('hidden');
   exportSpinner.classList.remove('hidden');
   exportLabel.textContent = '렌더링 중...';
-  exportStatus.textContent = '음정을 변환하고 있습니다. 잠시 기다려 주세요…';
+  exportStatus.textContent = '음정을 변환하는 중입니다. 잠시 기다려 주세요…';
 
   try {
     await ensureTone();
-    const semitones  = state.semitones;
-    const duration   = state.duration;
-    const toneBuffer = state.toneBuffer;
+    const semitones   = state.semitones;
+    const duration    = state.duration;
+    const gainHVal    = state.stemGainH?.gain.value ?? 1;
+    const gainPVal    = state.stemGainP?.gain.value ?? 1;
+    const stemsLoaded = state.stemsLoaded;
+    const tbH = state.toneBufferH;
+    const tbP = state.toneBufferP;
+    const tb  = state.toneBuffer;
 
     const rendered = await Tone.Offline(async () => {
       const ps = new Tone.PitchShift({ pitch: semitones, windowSize: 0.1 });
       ps.toDestination();
-      new Tone.Player(toneBuffer).connect(ps).start(0);
+      if (stemsLoaded && tbH && tbP) {
+        const gh = new Tone.Gain(gainHVal);
+        const gp = new Tone.Gain(gainPVal);
+        gh.connect(ps); gp.connect(ps);
+        new Tone.Player(tbH).connect(gh).start(0);
+        new Tone.Player(tbP).connect(gp).start(0);
+      } else {
+        new Tone.Player(tb).connect(ps).start(0);
+      }
     }, duration + 0.5);
 
-    const audioBuffer = rendered.get();
+    let audioBuffer = rendered.get();
 
     // 여유분 트림
-    let trimmed = audioBuffer;
     if (audioBuffer.duration > duration + 0.05) {
       const trimLen = Math.ceil(duration * audioBuffer.sampleRate);
-      trimmed = new OfflineAudioContext(
+      const trimmed = new OfflineAudioContext(
         audioBuffer.numberOfChannels, trimLen, audioBuffer.sampleRate
       ).createBuffer(audioBuffer.numberOfChannels, trimLen, audioBuffer.sampleRate);
       for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
         trimmed.copyToChannel(audioBuffer.getChannelData(c).slice(0, trimLen), c);
       }
+      audioBuffer = trimmed;
     }
 
-    const wavBytes = encodeWAV(trimmed);
-    const blob     = new Blob([wavBytes], { type: 'audio/wav' });
-    const url      = URL.createObjectURL(blob);
-    const sign     = semitones >= 0 ? `+${semitones}` : `${semitones}`;
-    const outName  = `${state.fileName}_${sign}st.wav`;
+    const sign = semitones >= 0 ? `+${semitones}` : `${semitones}`;
+    let bytes, mimeType, ext;
 
+    if (fmt === 'wav') {
+      const targetSR = WAV_SAMPLE_RATES[qty];
+      const finalBuf = targetSR ? await resampleBuffer(audioBuffer, targetSR) : audioBuffer;
+      bytes    = encodeWAV(finalBuf);
+      mimeType = 'audio/wav';
+      ext      = '.wav';
+    } else {
+      exportLabel.textContent = 'MP3 인코딩 중...';
+      bytes    = encodeMp3(audioBuffer, MP3_BITRATES[qty]);
+      mimeType = 'audio/mpeg';
+      ext      = '.mp3';
+    }
+
+    const blob    = new Blob([bytes], { type: mimeType });
+    const url     = URL.createObjectURL(blob);
+    const outName = `${state.fileName}_${sign}st${ext}`;
     const a = document.createElement('a');
     a.href = url; a.download = outName; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
@@ -964,8 +1302,78 @@ async function exportWAV() {
     exportBtn.disabled = false;
     exportIcon.classList.remove('hidden');
     exportSpinner.classList.add('hidden');
-    exportLabel.textContent = '전조된 파일 다운로드';
+    exportLabel.textContent = '다운로드';
     if (wasPlaying) togglePlay();
+  }
+}
+
+// ── 줄기 분리 ──
+async function loadStems() {
+  if (!IS_SERVER) {
+    stemStatus.textContent = '⚠️ 서버 모드에서만 사용 가능합니다.';
+    return;
+  }
+
+  stemBtn.disabled = true;
+  stemBtnLabel.textContent = '처리 중...';
+  stemSpinner.classList.remove('hidden');
+  stemStatus.textContent = '멜로디와 드럼을 분리하는 중... (최대 60초)';
+
+  try {
+    let stemData;
+    if (state.stemFid) {
+      const res = await fetchWithColdStart(`/stems/${state.stemFid}`, {}, {
+        overlayDelay: 10000, timeoutMs: 65000,
+        timeoutMessage: '줄기 분리가 65초를 넘겼습니다. 더 짧은 음원을 사용해 주세요.',
+        overlay: { emoji: '🎛', title: '줄기 분리 중', desc: '멜로디와 드럼 성분을 분리하고 있습니다.<br>최대 60초 소요.' },
+      });
+      stemData = await res.json();
+      if (!res.ok || stemData.error) throw new Error(stemData.error || '줄기 분리 실패');
+    } else if (state.sourceFile) {
+      const fd = new FormData();
+      fd.append('file', state.sourceFile);
+      const res = await fetchWithColdStart('/stems/file', { method: 'POST', body: fd }, {
+        overlayDelay: 10000, timeoutMs: 65000,
+        timeoutMessage: '줄기 분리가 65초를 넘겼습니다. 더 짧은 음원을 사용해 주세요.',
+        overlay: { emoji: '🎛', title: '줄기 분리 중', desc: '멜로디와 드럼 성분을 분리하고 있습니다.<br>최대 60초 소요.' },
+      });
+      stemData = await res.json();
+      if (!res.ok || stemData.error) throw new Error(stemData.error || '줄기 분리 실패');
+    } else {
+      throw new Error('음원을 찾을 수 없습니다.');
+    }
+
+    stemStatus.textContent = '줄기 오디오 불러오는 중...';
+    const [hRes, pRes] = await Promise.all([fetch(stemData.harmonic), fetch(stemData.percussive)]);
+    if (!hRes.ok || !pRes.ok) throw new Error('줄기 오디오 파일을 가져올 수 없습니다.');
+
+    const [hBuf, pBuf] = await Promise.all([hRes.arrayBuffer(), pRes.arrayBuffer()]);
+    const actx = new AudioContext();
+    const [hDecoded, pDecoded] = await Promise.all([
+      actx.decodeAudioData(hBuf), actx.decodeAudioData(pBuf),
+    ]);
+    actx.close();
+
+    state.toneBufferH = new Tone.ToneAudioBuffer(hDecoded);
+    state.toneBufferP = new Tone.ToneAudioBuffer(pDecoded);
+    state.stemsLoaded = true;
+
+    const wasPlaying  = state.isPlaying;
+    const seekOffset  = state.seekOffset;
+    if (wasPlaying) stopPlayback();
+    state.seekOffset = seekOffset;
+    setupToneGraph();
+
+    stemRows.classList.add('show');
+    stemBtnLabel.textContent = '🎛 재처리';
+    stemStatus.textContent   = '✅ 완료! 슬라이더로 멜로디/드럼 볼륨을 조절하세요.';
+    if (wasPlaying) togglePlay();
+  } catch (e) {
+    stemStatus.textContent   = `⚠️ ${e.message}`;
+    stemBtnLabel.textContent = '🎛 줄기 분리 시작';
+  } finally {
+    stemBtn.disabled = false;
+    stemSpinner.classList.add('hidden');
   }
 }
 
@@ -984,9 +1392,40 @@ document.querySelectorAll('.preset-btn').forEach(btn => {
   btn.addEventListener('click', () => setPitch(Number(btn.dataset.semitones)));
 });
 playBtn.addEventListener('click', togglePlay);
-exportBtn.addEventListener('click', exportWAV);
+exportBtn.addEventListener('click', exportAudio);
 ytBtn.addEventListener('click', loadFromYouTube);
 ytUrlInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadFromYouTube(); });
+
+// 형식/품질 선택
+document.querySelectorAll('.fmt-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.fmt-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.exportFmt = btn.dataset.fmt;
+  });
+});
+document.querySelectorAll('.qty-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.qty-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.exportQty = btn.dataset.qty;
+  });
+});
+
+// 줄기 슬라이더
+stemSliderH.addEventListener('input', () => {
+  const pct = stemSliderH.value;
+  stemPctH.textContent = pct + '%';
+  stemSliderH.style.setProperty('--pct', pct + '%');
+  if (state.stemGainH) state.stemGainH.gain.value = pct / 100;
+});
+stemSliderP.addEventListener('input', () => {
+  const pct = stemSliderP.value;
+  stemPctP.textContent = pct + '%';
+  stemSliderP.style.setProperty('--pct', pct + '%');
+  if (state.stemGainP) state.stemGainP.gain.value = pct / 100;
+});
+stemBtn.addEventListener('click', loadStems);
 
 updateSliderGradient();
 </script>
