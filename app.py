@@ -7,6 +7,7 @@
   → 브라우저에서 http://localhost:5000 열기
 """
 
+import atexit
 import io
 import os
 import re
@@ -33,6 +34,35 @@ try:
     os.environ.setdefault('REQUESTS_CA_BUNDLE', _certifi.where())
 except ImportError:
     pass
+
+# ── bgutil PO Token 서버 (YouTube 봇 차단 우회, 개인 계정 불필요) ──────────────
+_BGUTIL_SCRIPT = '/bgutil/server/build/main.js'
+_BGUTIL_PROC = None
+
+
+def _start_bgutil():
+    global _BGUTIL_PROC
+    if not os.path.exists(_BGUTIL_SCRIPT):
+        return  # 로컬 개발 환경에서는 스킵
+    try:
+        _BGUTIL_PROC = subprocess.Popen(
+            ['node', _BGUTIL_SCRIPT],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(3)  # 서버 초기화 대기
+        print('[bgutil] PO Token 서버 시작 완료 (port 4416)')
+    except Exception as e:
+        print(f'[bgutil] 서버 시작 실패: {e}')
+
+
+def _stop_bgutil():
+    if _BGUTIL_PROC:
+        _BGUTIL_PROC.terminate()
+
+
+atexit.register(_stop_bgutil)
+_start_bgutil()
 
 app = Flask(__name__, static_folder='.')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 파일 업로드 최대 50MB
@@ -250,7 +280,7 @@ def _try_pytubefix(yt_url):
     return audio.url, yt.title or '유튜브 오디오', int(yt.length or 0)
 
 
-_YDL_CLIENTS = [['ios'], ['android'], ['web_creator'], ['mweb']]
+_YDL_CLIENTS = [['web'], ['ios'], ['android'], ['web_creator'], ['mweb']]
 
 
 def _try_ytdlp(yt_url):
@@ -464,6 +494,8 @@ if __name__ == '__main__':
     print('  반음 전조 도구 + 음악 분석 서버 시작')
     print('  http://localhost:5000 을 브라우저에서 열어주세요')
     ck = _get_yt_cookies()
-    print(f'  YouTube 쿠키: {"✅ " + ck if ck else "❌ 미설정 (YouTube 차단될 수 있음)"}')
+    bgutil_ok = _BGUTIL_PROC is not None
+    print(f'  YouTube 쿠키  : {"✅ " + ck if ck else "❌ 미설정"}')
+    print(f'  bgutil PO 토큰: {"✅ 실행 중 (port 4416)" if bgutil_ok else "❌ 미설치 (로컬 모드)"}')
     print('=' * 52)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
