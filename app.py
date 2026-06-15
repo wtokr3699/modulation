@@ -9,6 +9,7 @@
 
 import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -25,10 +26,34 @@ from flask import Flask, jsonify, request, send_file
 warnings.simplefilter("ignore")
 
 app = Flask(__name__, static_folder='.')
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 파일 업로드 최대 50MB
+
 FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 
 # 임시 파일 레지스트리: {file_id: filepath}
 TEMP = {}
+
+# 허용된 오디오 확장자
+ALLOWED_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.flac', '.m4a', '.webm', '.opus', '.aac'}
+
+# 동시 분석 요청 제한
+_analyze_semaphore = threading.Semaphore(3)
+
+# YouTube URL 화이트리스트 (SSRF 방지)
+_YT_PATTERN = re.compile(
+    r'^https://(www\.)?(youtube\.com/(watch|shorts|embed)|youtu\.be/)',
+    re.IGNORECASE,
+)
+
+
+def is_valid_youtube_url(url: str) -> bool:
+    return bool(_YT_PATTERN.match(url))
+
+
+def safe_extension(filename: str) -> str:
+    """허용된 확장자만 반환. 그 외에는 .tmp."""
+    ext = os.path.splitext(filename or '')[1].lower()
+    return ext if ext in ALLOWED_EXTENSIONS else '.tmp'
 
 # ── 음악 분석 함수 ─────────────────────────────────────────────────────────────
 # 출처: /Users/applw/Desktop/coding/bpm/analyzer.py (단순화·확장)
@@ -158,6 +183,11 @@ def load_audio_via_ffmpeg(filepath, max_duration=120):
 
 # ── Flask 라우트 ───────────────────────────────────────────────────────────────
 
+@app.errorhandler(413)
+def too_large(e):
+    return jsonify({'error': '파일 크기가 너무 큽니다 (최대 50MB).'}), 413
+
+
 @app.route('/')
 def index():
     return send_file('index.html')
@@ -170,6 +200,8 @@ def yt_download():
     url = data.get('url', '').strip()
     if not url:
         return jsonify({'error': 'URL이 비어 있습니다.'}), 400
+    if not is_valid_youtube_url(url):
+        return jsonify({'error': '유튜브 URL만 허용됩니다.'}), 400
 
     fid = str(uuid.uuid4())
     tmpdir = tempfile.mkdtemp(prefix='yt_audio_')
@@ -241,7 +273,7 @@ def analyze():
     try:
         if 'file' in request.files:
             f = request.files['file']
-            ext = os.path.splitext(f.filename)[1] if f.filename else '.tmp'
+            ext = safe_extension(f.filename)
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
             f.save(tmp)
             tmp.close()
@@ -259,7 +291,13 @@ def analyze():
         else:
             return jsonify({'error': '파일 또는 file_id가 필요합니다.'}), 400
 
-        y, sr = load_audio_via_ffmpeg(audio_path)
+        if not _analyze_semaphore.acquire(blocking=False):
+            return jsonify({'error': '현재 분석 요청이 많습니다. 잠시 후 다시 시도하세요.'}), 429
+
+        try:
+            y, sr = load_audio_via_ffmpeg(audio_path)
+        finally:
+            _analyze_semaphore.release()
 
         # BPM
         tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
