@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<!--
+  오디오 반음 전조 도구 + 음악 분석 (Audio Pitch Transposer + Music Analyzer)
+
+  [파일 직접 열기]
+    index.html을 브라우저에서 열면 파일 업로드 + 전조 기능 사용 가능합니다.
+    (YouTube 불러오기 및 BPM/코드 분석은 서버 모드에서만 동작)
+
+  [전체 기능 사용]
+    1. pip install -r requirements.txt
+    2. python app.py
+    3. http://localhost:5000 열기
+
+  사용법:
+    - 유튜브 URL 입력 또는 오디오 파일 업로드
+    - 슬라이더나 프리셋 버튼으로 반음 조절
+    - ▶ 버튼으로 미리듣기 (재생 중 현재 코드 하이라이트)
+    - "전조된 파일 다운로드"로 WAV 저장
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>반음 전조 도구</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+<style>
+  :root {
+    --accent: #4f46e5;
+    --accent-light: #818cf8;
+    --accent-dark: #3730a3;
+    --accent-bg: #eef2ff;
+    --bg: #f1f5f9;
+    --card: #ffffff;
+    --text: #1e293b;
+    --text-muted: #64748b;
+    --border: #e2e8f0;
+    --danger: #ef4444;
+    --success: #10b981;
+    --radius: 12px;
+    --shadow: 0 1px 3px rgba(0,0,0,.08), 0 4px 16px rgba(79,70,229,.06);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 24px 16px 48px;
+  }
+
+  .app { max-width: 560px; margin: 0 auto; }
+
+  header { text-align: center; margin-bottom: 28px; }
+  header h1 { font-size: 1.5rem; font-weight: 700; color: var(--accent-dark); letter-spacing: -0.5px; }
+  header p { font-size: .875rem; color: var(--text-muted); margin-top: 4px; }
+
+  .card {
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .card-title {
+    font-size: .75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--text-muted);
+    margin-bottom: 14px;
+  }
+
+  /* ── YouTube 섹션 ── */
+  .yt-row { display: flex; gap: 8px; }
+  .yt-input {
+    flex: 1; border: 1.5px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font-size: .9rem; outline: none; color: var(--text);
+    transition: border-color .15s; min-width: 0;
+  }
+  .yt-input:focus { border-color: var(--accent-light); }
+  .yt-input::placeholder { color: var(--text-muted); font-size: .85rem; }
+  .yt-btn {
+    padding: 10px 16px; border-radius: 8px; border: none;
+    background: var(--accent); color: #fff; font-size: .875rem; font-weight: 600;
+    cursor: pointer; white-space: nowrap; transition: background .15s;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .yt-btn:hover { background: var(--accent-dark); }
+  .yt-btn:disabled { background: var(--border); color: var(--text-muted); cursor: not-allowed; }
+  .yt-status { font-size: .8rem; color: var(--text-muted); margin-top: 8px; min-height: 1.2em; }
+  .yt-status.error { color: var(--danger); }
+  .yt-status.success { color: var(--success); }
+  .server-hint {
+    font-size: .78rem; color: var(--text-muted);
+    background: #f8fafc; border: 1px dashed var(--border);
+    border-radius: 8px; padding: 8px 12px; line-height: 1.6;
+    margin-top: 8px;
+  }
+  .server-hint code {
+    font-family: monospace; background: var(--border);
+    padding: 1px 5px; border-radius: 4px; font-size: .85em;
+  }
+
+  /* ── 음악 분석 결과 ── */
+  .analysis-badges { display: flex; gap: 10px; margin-bottom: 14px; }
+  .badge {
+    flex: 1; text-align: center; background: var(--accent-bg);
+    border-radius: 10px; padding: 10px 6px;
+  }
+  .badge-label { font-size: .65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .08em; display: block; margin-bottom: 4px; }
+  .badge-value { font-size: 1.05rem; font-weight: 700; color: var(--accent-dark); line-height: 1.2; }
+  .badge-sub { font-size: .7rem; color: var(--text-muted); display: block; }
+
+  .analysis-loading {
+    display: flex; align-items: center; gap: 8px;
+    font-size: .82rem; color: var(--text-muted); margin-bottom: 12px;
+  }
+  .analysis-loading.hidden { display: none; }
+
+  /* 코드 진행 타임라인 */
+  .chord-section { margin-top: 2px; }
+  .chord-section-title {
+    font-size: .72rem; font-weight: 600; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px;
+  }
+  .chord-timeline {
+    display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  .chord-timeline::-webkit-scrollbar { height: 4px; }
+  .chord-timeline::-webkit-scrollbar-track { background: transparent; }
+  .chord-timeline::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .chord-chip {
+    flex-shrink: 0; min-width: 46px; padding: 7px 10px;
+    border-radius: 8px; background: var(--bg); border: 1.5px solid var(--border);
+    text-align: center; cursor: default; scroll-snap-align: center;
+    transition: background .1s, border-color .1s, color .1s;
+  }
+  .chord-chip-name { display: block; font-size: .9rem; font-weight: 700; }
+  .chord-chip-num  { display: block; font-size: .65rem; color: var(--text-muted); margin-top: 1px; }
+  .chord-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chord-chip.active .chord-chip-num { color: rgba(255,255,255,.8); }
+  .chord-empty { font-size: .8rem; color: var(--text-muted); font-style: italic; }
+
+  /* ── Upload ── */
+  .drop-zone {
+    border: 2px dashed var(--border); border-radius: 10px;
+    padding: 32px 20px; text-align: center; cursor: pointer;
+    transition: border-color .2s, background .2s; position: relative;
+  }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent-light); background: var(--accent-bg); }
+  .drop-zone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+  .drop-icon { font-size: 2rem; margin-bottom: 8px; }
+  .drop-label { font-size: .9rem; color: var(--text-muted); }
+  .drop-label span { color: var(--accent); font-weight: 600; }
+  .drop-formats { font-size: .75rem; color: var(--text-muted); margin-top: 4px; }
+
+  .file-info { display: none; align-items: center; gap: 12px; margin-top: 12px; background: var(--accent-bg); border-radius: 8px; padding: 10px 14px; }
+  .file-info.show { display: flex; }
+  .file-icon { font-size: 1.4rem; flex-shrink: 0; }
+  .file-details { min-width: 0; }
+  .file-name { font-size: .875rem; font-weight: 600; color: var(--accent-dark); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file-duration { font-size: .75rem; color: var(--text-muted); margin-top: 2px; }
+
+  /* ── Pitch ── */
+  .pitch-display { text-align: center; margin-bottom: 16px; }
+  .pitch-value { font-size: 1.75rem; font-weight: 700; color: var(--accent); line-height: 1; }
+  .pitch-name { font-size: .875rem; color: var(--text-muted); margin-top: 4px; }
+
+  .slider-wrap { position: relative; padding: 4px 0; margin-bottom: 6px; }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 6px;
+    border-radius: 3px; outline: none; cursor: pointer;
+    background: linear-gradient(to right, var(--accent) var(--pct, 50%), var(--border) var(--pct, 50%));
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--accent); border: 3px solid #fff;
+    box-shadow: 0 0 0 1px var(--accent-light), 0 2px 6px rgba(79,70,229,.3);
+    cursor: pointer; transition: transform .1s;
+  }
+  input[type=range]::-webkit-slider-thumb:active { transform: scale(1.15); }
+  input[type=range]::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); border: 3px solid #fff; cursor: pointer; }
+  .slider-labels { display: flex; justify-content: space-between; font-size: .7rem; color: var(--text-muted); margin-top: 2px; }
+
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; justify-content: center; }
+  .preset-btn {
+    padding: 5px 12px; border-radius: 20px; border: 1.5px solid var(--border);
+    background: transparent; font-size: .8rem; font-weight: 600;
+    color: var(--text-muted); cursor: pointer; transition: all .15s;
+  }
+  .preset-btn:hover { border-color: var(--accent-light); color: var(--accent); background: var(--accent-bg); }
+  .preset-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ── Playback ── */
+  .playback-row { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+  .play-btn {
+    flex-shrink: 0; width: 48px; height: 48px; border-radius: 50%;
+    border: none; background: var(--accent); color: #fff; font-size: 1.2rem;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: background .15s, transform .1s;
+    box-shadow: 0 2px 8px rgba(79,70,229,.35);
+  }
+  .play-btn:hover { background: var(--accent-dark); }
+  .play-btn:active { transform: scale(.95); }
+  .play-btn:disabled { background: var(--border); box-shadow: none; cursor: not-allowed; }
+  .time-display { font-size: .8rem; color: var(--text-muted); white-space: nowrap; min-width: 80px; text-align: right; }
+
+  .progress-wrap { position: relative; height: 6px; background: var(--border); border-radius: 3px; cursor: pointer; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 3px; width: 0%; transition: width .1s linear; pointer-events: none; }
+
+  /* ── Export ── */
+  .export-btn {
+    width: 100%; padding: 14px; border-radius: 10px; border: none;
+    background: var(--accent); color: #fff; font-size: 1rem; font-weight: 600;
+    cursor: pointer; transition: background .15s, transform .1s;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    box-shadow: 0 2px 8px rgba(79,70,229,.3);
+  }
+  .export-btn:hover { background: var(--accent-dark); }
+  .export-btn:active { transform: scale(.98); }
+  .export-btn:disabled { background: var(--border); color: var(--text-muted); box-shadow: none; cursor: not-allowed; }
+  .export-status { margin-top: 10px; font-size: .8rem; color: var(--text-muted); text-align: center; min-height: 1.2em; }
+
+  /* ── Spinner ── */
+  .spinner {
+    display: inline-block; width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
+    border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0;
+  }
+  .spinner-sm {
+    display: inline-block; width: 13px; height: 13px;
+    border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
+    border-radius: 50%; animation: spin .7s linear infinite;
+  }
+  .spinner-dark {
+    display: inline-block; width: 13px; height: 13px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .hidden { display: none !important; }
+  .error-msg { margin-top: 8px; padding: 8px 12px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; font-size: .8rem; color: var(--danger); display: none; }
+  .error-msg.show { display: block; }
+
+  @media (max-width: 420px) {
+    .pitch-value { font-size: 1.4rem; }
+    .presets { gap: 4px; }
+    .preset-btn { padding: 4px 9px; font-size: .75rem; }
+    .yt-btn { padding: 10px 12px; font-size: .8rem; }
+    .analysis-badges { gap: 6px; }
+    .badge { padding: 8px 4px; }
+    .badge-value { font-size: .9rem; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>🎵 반음 전조 도구</h1>
+    <p>오디오 파일의 음정을 반음 단위로 조절하고, BPM과 코드를 분석하세요</p>
+  </header>
+
+  <!-- 0. 유튜브 불러오기 -->
+  <div class="card" id="ytCard">
+    <div class="card-title">유튜브에서 불러오기</div>
+    <div class="yt-row">
+      <input class="yt-input" type="text" id="ytUrl"
+             placeholder="https://www.youtube.com/watch?v=...">
+      <button class="yt-btn" id="ytBtn">
+        <span id="ytBtnLabel">불러오기</span>
+        <span class="spinner-sm hidden" id="ytSpinner"></span>
+      </button>
+    </div>
+    <div class="server-hint hidden" id="serverHint">
+      ℹ️ 실제 다운로드는 서버 모드에서만 가능합니다 — <code>python app.py</code> 실행 후 <code>http://localhost:5000</code> 에서 이용하세요.
+    </div>
+    <div class="yt-status" id="ytStatus"></div>
+  </div>
+
+  <!-- 1. 파일 업로드 -->
+  <div class="card">
+    <div class="card-title">파일 업로드</div>
+    <div class="drop-zone" id="dropZone">
+      <input type="file" id="fileInput" accept=".mp3,.wav,.ogg,.flac,.m4a,audio/*">
+      <div class="drop-icon">🎧</div>
+      <div class="drop-label"><span>파일 선택</span> 또는 드래그하여 업로드</div>
+      <div class="drop-formats">지원 형식: MP3, WAV, OGG, FLAC, M4A</div>
+    </div>
+    <div class="file-info" id="fileInfo">
+      <div class="file-icon" id="fileIcon">🎵</div>
+      <div class="file-details">
+        <div class="file-name" id="fileName">–</div>
+        <div class="file-duration" id="fileDuration">–</div>
+      </div>
+    </div>
+    <div class="error-msg" id="errorMsg"></div>
+  </div>
+
+  <!-- 2. 음악 분석 결과 (서버 모드에서만 표시) -->
+  <div class="card hidden" id="analysisCard">
+    <div class="card-title">음악 분석</div>
+
+    <div class="analysis-loading" id="analysisLoading">
+      <span class="spinner-dark"></span>
+      <span>BPM · 조성 · 코드 분석 중…</span>
+    </div>
+
+    <div id="analysisResults" class="hidden">
+      <div class="analysis-badges">
+        <div class="badge">
+          <span class="badge-label">BPM</span>
+          <span class="badge-value" id="bpmVal">–</span>
+        </div>
+        <div class="badge">
+          <span class="badge-label">KEY</span>
+          <span class="badge-value" id="keyVal">–</span>
+        </div>
+        <div class="badge">
+          <span class="badge-label">박자</span>
+          <span class="badge-value" id="meterVal">–</span>
+        </div>
+      </div>
+
+      <div class="chord-section">
+        <div class="chord-section-title">코드 진행 (재생 중 현재 코드 하이라이트)</div>
+        <div class="chord-timeline" id="chordTimeline">
+          <span class="chord-empty">코드 정보 없음</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. 반음 조절 -->
+  <div class="card">
+    <div class="card-title">반음 조절</div>
+    <div class="pitch-display">
+      <div class="pitch-value" id="pitchValue">0 반음</div>
+      <div class="pitch-name" id="pitchName">원음</div>
+    </div>
+    <div class="slider-wrap">
+      <input type="range" id="pitchSlider" min="-12" max="12" step="1" value="0">
+    </div>
+    <div class="slider-labels"><span>−12</span><span>−6</span><span>0</span><span>+6</span><span>+12</span></div>
+    <div class="presets" id="presets">
+      <button class="preset-btn" data-semitones="-5">−5</button>
+      <button class="preset-btn" data-semitones="-3">−3</button>
+      <button class="preset-btn" data-semitones="-2">−2</button>
+      <button class="preset-btn" data-semitones="-1">−1</button>
+      <button class="preset-btn active" data-semitones="0">0</button>
+      <button class="preset-btn" data-semitones="1">+1</button>
+      <button class="preset-btn" data-semitones="2">+2</button>
+      <button class="preset-btn" data-semitones="3">+3</button>
+      <button class="preset-btn" data-semitones="5">+5</button>
+    </div>
+  </div>
+
+  <!-- 4. 재생 -->
+  <div class="card">
+    <div class="card-title">미리듣기</div>
+    <div class="playback-row">
+      <button class="play-btn" id="playBtn" disabled title="재생">▶</button>
+      <div style="flex:1">
+        <div class="progress-wrap" id="progressWrap">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+      </div>
+      <div class="time-display" id="timeDisplay">0:00 / 0:00</div>
+    </div>
+  </div>
+
+  <!-- 5. 다운로드 -->
+  <div class="card">
+    <div class="card-title">내보내기</div>
+    <button class="export-btn" id="exportBtn" disabled>
+      <span id="exportIcon">💾</span>
+      <span id="exportLabel">전조된 파일 다운로드</span>
+      <span class="spinner hidden" id="exportSpinner"></span>
+    </button>
+    <div class="export-status" id="exportStatus"></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ── 음정 이름 테이블 ──
+const INTERVAL_NAMES = {
+  0: '원음',
+  1: '단2도', 2: '장2도', 3: '단3도', 4: '장3도',
+  5: '완전4도', 6: '증4도', 7: '완전5도', 8: '단6도',
+  9: '장6도', 10: '단7도', 11: '장7도', 12: '옥타브'
+};
+
+// ── 상태 ──
+const state = {
+  rawBuffer: null,
+  toneBuffer: null,
+  fileName: '',
+  semitones: 0,
+  isPlaying: false,
+  seekOffset: 0,
+  playStartedAt: 0,
+  duration: 0,
+  player: null,
+  pitchShift: null,
+  rafId: null,
+  toneReady: false,
+  // 분석 결과
+  chords: [],          // [{time, chord, numeral}, ...]
+  lastChordTime: -1,   // 마지막으로 하이라이트한 코드 time
+};
+
+// ── DOM refs ──
+const $ = id => document.getElementById(id);
+const ytUrlInput    = $('ytUrl');
+const ytBtn         = $('ytBtn');
+const ytBtnLabel    = $('ytBtnLabel');
+const ytSpinner     = $('ytSpinner');
+const ytStatus      = $('ytStatus');
+const dropZone      = $('dropZone');
+const fileInput     = $('fileInput');
+const fileInfo      = $('fileInfo');
+const fileIcon      = $('fileIcon');
+const fileName      = $('fileName');
+const fileDuration  = $('fileDuration');
+const errorMsg      = $('errorMsg');
+const analysisCard  = $('analysisCard');
+const analysisLoading = $('analysisLoading');
+const analysisResults = $('analysisResults');
+const bpmVal        = $('bpmVal');
+const keyVal        = $('keyVal');
+const meterVal      = $('meterVal');
+const chordTimeline = $('chordTimeline');
+const pitchSlider   = $('pitchSlider');
+const pitchValue    = $('pitchValue');
+const pitchName     = $('pitchName');
+const playBtn       = $('playBtn');
+const progressWrap  = $('progressWrap');
+const progressFill  = $('progressFill');
+const timeDisplay   = $('timeDisplay');
+const exportBtn     = $('exportBtn');
+const exportLabel   = $('exportLabel');
+const exportIcon    = $('exportIcon');
+const exportSpinner = $('exportSpinner');
+const exportStatus  = $('exportStatus');
+
+// ── 서버 모드 감지 ──
+const IS_SERVER = window.location.protocol === 'http:' || window.location.protocol === 'https:';
+if (!IS_SERVER) {
+  $('serverHint').classList.remove('hidden');
+}
+
+// ── 유틸 ──
+function fmtTime(sec) {
+  if (!isFinite(sec) || isNaN(sec)) return '0:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function showError(msg) {
+  errorMsg.textContent = msg;
+  errorMsg.classList.add('show');
+  setTimeout(() => errorMsg.classList.remove('show'), 6000);
+}
+
+function setYtStatus(msg, type = '') {
+  ytStatus.textContent = msg;
+  ytStatus.className = 'yt-status' + (type ? ' ' + type : '');
+}
+
+// ── 반음 업데이트 ──
+function updateSliderGradient() {
+  const pct = ((state.semitones - (-12)) / 24) * 100;
+  pitchSlider.style.setProperty('--pct', pct + '%');
+}
+
+function setPitch(n) {
+  state.semitones = n;
+  pitchSlider.value = n;
+  updateSliderGradient();
+
+  const abs = Math.abs(n);
+  const name = INTERVAL_NAMES[abs] || `${abs}반음`;
+  if (n === 0) {
+    pitchValue.textContent = '0 반음';
+    pitchName.textContent = '원음';
+  } else {
+    pitchValue.textContent = `${n > 0 ? '+' : ''}${n} 반음`;
+    pitchName.textContent = `${name} ${n > 0 ? '↑' : '↓'}`;
+  }
+
+  document.querySelectorAll('.preset-btn').forEach(btn => {
+    btn.classList.toggle('active', Number(btn.dataset.semitones) === n);
+  });
+
+  if (state.pitchShift) state.pitchShift.pitch = n;
+}
+
+// ── Tone.js 초기화 ──
+async function ensureTone() {
+  if (!state.toneReady) {
+    await Tone.start();
+    state.toneReady = true;
+  }
+}
+
+function teardownTone() {
+  stopPlayback();
+  if (state.player)    { state.player.dispose();    state.player    = null; }
+  if (state.pitchShift){ state.pitchShift.dispose(); state.pitchShift = null; }
+}
+
+function setupToneGraph() {
+  teardownTone();
+  state.pitchShift = new Tone.PitchShift({ pitch: state.semitones, windowSize: 0.1 });
+  state.player = new Tone.Player(state.toneBuffer);
+  state.player.connect(state.pitchShift);
+  state.pitchShift.toDestination();
+  state.player.loop = false;
+  state.player.onstop = () => { if (state.isPlaying) onPlaybackEnded(); };
+}
+
+// ── 공통 오디오 버퍼 로드 ──
+async function loadAudioBuffer(arrayBuffer, displayName) {
+  const actx = new AudioContext();
+  const decoded = await actx.decodeAudioData(arrayBuffer);
+  actx.close();
+
+  state.rawBuffer  = decoded;
+  state.duration   = decoded.duration;
+  state.fileName   = displayName;
+  state.toneBuffer = new Tone.ToneAudioBuffer(decoded);
+  state.chords     = [];
+  state.lastChordTime = -1;
+
+  setupToneGraph();
+
+  fileInfo.classList.add('show');
+  fileName.textContent    = displayName;
+  fileDuration.textContent = `재생 시간: ${fmtTime(decoded.duration)}`;
+  playBtn.disabled   = false;
+  exportBtn.disabled = false;
+  updateTimeDisplay(0);
+  state.seekOffset = 0;
+
+  // 분석 패널 초기화
+  if (IS_SERVER) {
+    analysisCard.classList.remove('hidden');
+    analysisLoading.classList.remove('hidden');
+    analysisResults.classList.add('hidden');
+    chordTimeline.innerHTML = '';
+  }
+}
+
+// ── 음악 분석 ──
+async function triggerAnalysis(file = null, fileId = null) {
+  if (!IS_SERVER) return;
+
+  try {
+    let body, headers;
+    if (file) {
+      const fd = new FormData();
+      fd.append('file', file);
+      body = fd;
+      headers = {};
+    } else if (fileId) {
+      body = JSON.stringify({ file_id: fileId });
+      headers = { 'Content-Type': 'application/json' };
+    } else {
+      return;
+    }
+
+    const res  = await fetch('/analyze', { method: 'POST', headers, body });
+    const data = await res.json();
+
+    if (!res.ok || data.error) throw new Error(data.error || '분석 실패');
+
+    // 결과 표시
+    bpmVal.textContent   = data.bpm;
+    keyVal.textContent   = data.key;
+    meterVal.textContent = data.meter;
+
+    state.chords = data.chords || [];
+    state.lastChordTime = -1;
+    renderChordTimeline(data.chords || []);
+
+    analysisLoading.classList.add('hidden');
+    analysisResults.classList.remove('hidden');
+  } catch (e) {
+    analysisLoading.innerHTML = `<span style="color:var(--danger)">⚠️ 분석 실패: ${e.message}</span>`;
+  }
+}
+
+function renderChordTimeline(chords) {
+  if (!chords.length) {
+    chordTimeline.innerHTML = '<span class="chord-empty">코드 정보 없음</span>';
+    return;
+  }
+  chordTimeline.innerHTML = chords.map(c =>
+    `<span class="chord-chip" data-time="${c.time}">` +
+      `<span class="chord-chip-name">${c.chord}</span>` +
+      `<span class="chord-chip-num">${c.numeral}</span>` +
+    `</span>`
+  ).join('');
+}
+
+function highlightCurrentChord(t) {
+  if (!state.chords.length) return;
+
+  // 현재 시간에 해당하는 코드 (findLast 폴리필 포함)
+  let current = null;
+  for (let i = state.chords.length - 1; i >= 0; i--) {
+    if (state.chords[i].time <= t) { current = state.chords[i]; break; }
+  }
+  if (!current || current.time === state.lastChordTime) return;
+
+  state.lastChordTime = current.time;
+  document.querySelectorAll('.chord-chip').forEach(el => el.classList.remove('active'));
+  const active = chordTimeline.querySelector(`.chord-chip[data-time="${current.time}"]`);
+  if (active) {
+    active.classList.add('active');
+    active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  }
+}
+
+// ── 파일 업로드 ──
+async function handleFile(file) {
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) {
+    showError('지원하지 않는 파일 형식입니다. MP3, WAV, OGG, FLAC, M4A를 사용하세요.');
+    return;
+  }
+
+  try {
+    await ensureTone();
+    const arrayBuf    = await file.arrayBuffer();
+    const displayName = file.name.replace(/\.[^.]+$/, '');
+    await loadAudioBuffer(arrayBuf, displayName);
+    fileIcon.textContent = '🎵';
+    dropZone.style.borderColor = 'var(--accent-light)';
+
+    // 분석은 비동기 병렬 (오디오 로드 완료 후)
+    triggerAnalysis(file);
+  } catch (e) {
+    showError('파일을 읽을 수 없습니다. 손상되지 않은 오디오 파일인지 확인하세요.');
+    console.error(e);
+  }
+}
+
+// ── YouTube 불러오기 ──
+async function loadFromYouTube() {
+  if (!IS_SERVER) {
+    setYtStatus('⚠️ 서버 모드에서만 사용 가능합니다. python app.py 실행 후 http://localhost:5000 에서 이용하세요.', 'error');
+    return;
+  }
+  const url = ytUrlInput.value.trim();
+  if (!url) { setYtStatus('URL을 입력해 주세요.', 'error'); return; }
+  if (!url.includes('youtube.com') && !url.includes('youtu.be')) {
+    setYtStatus('유튜브 URL만 지원됩니다.', 'error'); return;
+  }
+
+  ytBtn.disabled = true;
+  ytBtnLabel.textContent = '처리 중';
+  ytSpinner.classList.remove('hidden');
+  setYtStatus('📥 오디오를 다운로드하는 중...');
+
+  try {
+    await ensureTone();
+
+    const dlRes  = await fetch('/yt/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const dlData = await dlRes.json();
+    if (!dlRes.ok || dlData.error) throw new Error(dlData.error || '다운로드 실패');
+
+    setYtStatus('🎵 오디오를 불러오는 중...');
+
+    const audioRes = await fetch(`/yt/audio/${dlData.id}`);
+    if (!audioRes.ok) throw new Error('오디오 파일을 가져올 수 없습니다.');
+    const arrayBuf = await audioRes.arrayBuffer();
+
+    const title = dlData.title || '유튜브 오디오';
+    await loadAudioBuffer(arrayBuf, title);
+    fileIcon.textContent   = '▶️';
+    fileName.textContent   = title;
+    setYtStatus(`✅ "${title}" 로드 완료`, 'success');
+    dropZone.style.borderColor = 'var(--accent-light)';
+
+    // 분석: 서버에 저장된 파일 ID 전달 (재다운로드 없이 재사용)
+    triggerAnalysis(null, dlData.id);
+  } catch (e) {
+    setYtStatus(`⚠️ ${e.message}`, 'error');
+    console.error(e);
+  } finally {
+    ytBtn.disabled = false;
+    ytBtnLabel.textContent = '불러오기';
+    ytSpinner.classList.add('hidden');
+  }
+}
+
+// ── 재생 제어 ──
+function updateTimeDisplay(current) {
+  timeDisplay.textContent = `${fmtTime(current)} / ${fmtTime(state.duration)}`;
+  const pct = state.duration > 0 ? (current / state.duration) * 100 : 0;
+  progressFill.style.width = pct + '%';
+}
+
+function currentPlayTime() {
+  if (!state.isPlaying) return state.seekOffset;
+  return state.seekOffset + (Tone.now() - state.playStartedAt);
+}
+
+function startRaf() {
+  cancelAnimationFrame(state.rafId);
+  function tick() {
+    const t = currentPlayTime();
+    updateTimeDisplay(Math.min(t, state.duration));
+    highlightCurrentChord(t);
+    if (state.isPlaying) state.rafId = requestAnimationFrame(tick);
+  }
+  state.rafId = requestAnimationFrame(tick);
+}
+
+function stopPlayback() {
+  if (state.isPlaying) {
+    state.seekOffset = Math.min(currentPlayTime(), state.duration);
+    state.isPlaying  = false;
+    if (state.player && state.player.state === 'started') state.player.stop();
+    cancelAnimationFrame(state.rafId);
+    playBtn.textContent = '▶';
+  }
+}
+
+function onPlaybackEnded() {
+  state.isPlaying = false;
+  state.seekOffset = 0;
+  state.lastChordTime = -1;
+  cancelAnimationFrame(state.rafId);
+  playBtn.textContent = '▶';
+  updateTimeDisplay(0);
+  document.querySelectorAll('.chord-chip').forEach(el => el.classList.remove('active'));
+}
+
+async function togglePlay() {
+  if (!state.toneBuffer) return;
+  await ensureTone();
+  if (state.isPlaying) { stopPlayback(); return; }
+  if (state.seekOffset >= state.duration - 0.05) state.seekOffset = 0;
+
+  setupToneGraph();
+  state.isPlaying     = true;
+  state.playStartedAt = Tone.now();
+  playBtn.textContent = '⏸';
+
+  try {
+    state.player.start(Tone.now(), state.seekOffset);
+    startRaf();
+  } catch (e) {
+    console.error(e);
+    state.isPlaying     = false;
+    playBtn.textContent = '▶';
+  }
+}
+
+// ── 진행바 클릭 ──
+progressWrap.addEventListener('click', e => {
+  if (!state.rawBuffer) return;
+  const rect = progressWrap.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  const wasPlaying = state.isPlaying;
+  stopPlayback();
+  state.seekOffset = ratio * state.duration;
+  state.lastChordTime = -1;
+  updateTimeDisplay(state.seekOffset);
+  if (wasPlaying) togglePlay();
+});
+
+// ── WAV 인코더 (순수 JS) ──
+function encodeWAV(audioBuffer) {
+  const numChannels = audioBuffer.numberOfChannels;
+  const sampleRate  = audioBuffer.sampleRate;
+  const numSamples  = audioBuffer.length;
+  const blockAlign  = numChannels * 2;
+  const byteRate    = sampleRate * blockAlign;
+  const dataSize    = numSamples * numChannels * 2;
+  const buf  = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buf);
+
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o+i, s.charCodeAt(i)); };
+  const u32 = (o, v) => view.setUint32(o, v, true);
+  const u16 = (o, v) => view.setUint16(o, v, true);
+
+  str(0,'RIFF'); u32(4, 36 + dataSize); str(8,'WAVE');
+  str(12,'fmt '); u32(16, 16); u16(20, 1);
+  u16(22, numChannels); u32(24, sampleRate); u32(28, byteRate);
+  u16(32, blockAlign); u16(34, 16);
+  str(36,'data'); u32(40, dataSize);
+
+  const channels = [];
+  for (let c = 0; c < numChannels; c++) channels.push(audioBuffer.getChannelData(c));
+
+  let offset = 44;
+  for (let i = 0; i < numSamples; i++) {
+    for (let c = 0; c < numChannels; c++) {
+      const s = Math.max(-1, Math.min(1, channels[c][i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      offset += 2;
+    }
+  }
+  return new Uint8Array(buf);
+}
+
+// ── 내보내기 ──
+async function exportWAV() {
+  if (!state.rawBuffer) return;
+  const wasPlaying = state.isPlaying;
+  if (wasPlaying) stopPlayback();
+
+  exportBtn.disabled = true;
+  exportIcon.classList.add('hidden');
+  exportSpinner.classList.remove('hidden');
+  exportLabel.textContent = '렌더링 중...';
+  exportStatus.textContent = '음정을 변환하고 있습니다. 잠시 기다려 주세요…';
+
+  try {
+    await ensureTone();
+    const semitones  = state.semitones;
+    const duration   = state.duration;
+    const toneBuffer = state.toneBuffer;
+
+    const rendered = await Tone.Offline(async () => {
+      const ps = new Tone.PitchShift({ pitch: semitones, windowSize: 0.1 });
+      ps.toDestination();
+      new Tone.Player(toneBuffer).connect(ps).start(0);
+    }, duration + 0.5);
+
+    const audioBuffer = rendered.get();
+
+    // 여유분 트림
+    let trimmed = audioBuffer;
+    if (audioBuffer.duration > duration + 0.05) {
+      const trimLen = Math.ceil(duration * audioBuffer.sampleRate);
+      trimmed = new OfflineAudioContext(
+        audioBuffer.numberOfChannels, trimLen, audioBuffer.sampleRate
+      ).createBuffer(audioBuffer.numberOfChannels, trimLen, audioBuffer.sampleRate);
+      for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
+        trimmed.copyToChannel(audioBuffer.getChannelData(c).slice(0, trimLen), c);
+      }
+    }
+
+    const wavBytes = encodeWAV(trimmed);
+    const blob     = new Blob([wavBytes], { type: 'audio/wav' });
+    const url      = URL.createObjectURL(blob);
+    const sign     = semitones >= 0 ? `+${semitones}` : `${semitones}`;
+    const outName  = `${state.fileName}_${sign}st.wav`;
+
+    const a = document.createElement('a');
+    a.href = url; a.download = outName; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+
+    exportStatus.textContent = `✅ "${outName}" 다운로드 완료!`;
+  } catch (e) {
+    console.error(e);
+    exportStatus.textContent = '⚠️ 내보내기 실패. 다시 시도해 주세요.';
+    showError('내보내기 중 오류: ' + e.message);
+  } finally {
+    exportBtn.disabled = false;
+    exportIcon.classList.remove('hidden');
+    exportSpinner.classList.add('hidden');
+    exportLabel.textContent = '전조된 파일 다운로드';
+    if (wasPlaying) togglePlay();
+  }
+}
+
+// ── 이벤트 연결 ──
+fileInput.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+
+pitchSlider.addEventListener('input', () => setPitch(Number(pitchSlider.value)));
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => setPitch(Number(btn.dataset.semitones)));
+});
+playBtn.addEventListener('click', togglePlay);
+exportBtn.addEventListener('click', exportWAV);
+ytBtn.addEventListener('click', loadFromYouTube);
+ytUrlInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadFromYouTube(); });
+
+updateSliderGradient();
+</script>
+</body>
+</html>

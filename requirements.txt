@@ -1,0 +1,5 @@
+flask
+yt-dlp
+librosa
+numpy
+soundfile
