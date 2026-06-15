@@ -64,6 +64,39 @@ def _stop_bgutil():
 atexit.register(_stop_bgutil)
 _start_bgutil()
 
+# ── Tor SOCKS5 프록시 (YouTube IP 차단 우회용) ─────────────────────────────────
+_TOR_READY = False
+
+
+def _start_tor():
+    global _TOR_READY
+    if not shutil.which('tor'):
+        return
+    try:
+        import socket
+        os.makedirs('/tmp/tor_data', exist_ok=True)
+        subprocess.Popen(
+            ['tor', '--SocksPort', '9050',
+             '--DataDirectory', '/tmp/tor_data',
+             '--Log', 'err stderr'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        for _ in range(90):  # 최대 90초 대기
+            time.sleep(1)
+            try:
+                with socket.create_connection(('127.0.0.1', 9050), timeout=1):
+                    _TOR_READY = True
+                    print('[tor] SOCKS5 프록시 준비 완료 (port 9050)')
+                    return
+            except OSError:
+                pass
+        print('[tor] 90초 내 부트스트랩 실패')
+    except Exception as e:
+        print(f'[tor] 시작 오류: {e}')
+
+
+threading.Thread(target=_start_tor, daemon=True).start()
+
 app = Flask(__name__, static_folder='.')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 파일 업로드 최대 50MB
 
@@ -297,6 +330,8 @@ def _try_ytdlp(yt_url):
             }
             if cookies_file:
                 opts['cookiefile'] = cookies_file
+            if _TOR_READY:
+                opts['proxy'] = 'socks5://127.0.0.1:9050'
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(yt_url, download=False)
             audio_url = None
@@ -495,7 +530,9 @@ if __name__ == '__main__':
     print('  http://localhost:5000 을 브라우저에서 열어주세요')
     ck = _get_yt_cookies()
     bgutil_ok = _BGUTIL_PROC is not None
+    tor_installed = bool(shutil.which('tor'))
     print(f'  YouTube 쿠키  : {"✅ " + ck if ck else "❌ 미설정"}')
     print(f'  bgutil PO 토큰: {"✅ 실행 중 (port 4416)" if bgutil_ok else "❌ 미설치 (로컬 모드)"}')
+    print(f'  Tor 프록시    : {"✅ 부트스트랩 중 (port 9050)..." if tor_installed else "❌ 미설치"}')
     print('=' * 52)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
