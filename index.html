@@ -55,7 +55,7 @@
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
-    padding: 24px 16px 48px;
+    padding: 24px 16px 90px;
   }
 
   .app { max-width: 560px; margin: 0 auto; }
@@ -255,27 +255,70 @@
   .error-msg { margin-top: 8px; padding: 8px 12px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; font-size: .8rem; color: var(--danger); display: none; }
   .error-msg.show { display: block; }
 
-  /* Cold Start 안내 오버레이 */
-  .cold-overlay {
-    position: fixed; inset: 0; z-index: 9999;
-    background: rgba(15, 23, 42, 0.85);
+  /* ── 하단 탭 내비게이션 ── */
+  .bottom-nav {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    display: flex; background: var(--card);
+    border-top: 1px solid var(--border);
+    z-index: 100;
+    padding-bottom: env(safe-area-inset-bottom);
+    box-shadow: 0 -2px 12px rgba(0,0,0,.06);
+  }
+  .nav-tab {
+    flex: 1; padding: 10px 0 8px; border: none; background: none;
+    font-size: .68rem; font-weight: 500; color: var(--text-muted);
+    cursor: pointer; display: flex; flex-direction: column;
+    align-items: center; gap: 3px; transition: color .15s;
+  }
+  .nav-icon { font-size: 1.25rem; }
+  .nav-tab.active { color: var(--accent); font-weight: 700; }
+
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  /* ── 재생 기록 ── */
+  .history-empty {
+    text-align: center; color: var(--text-muted);
+    font-size: .9rem; padding: 40px 20px; line-height: 2;
+  }
+  .history-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 0; border-bottom: 1px solid var(--border);
+  }
+  .history-item:last-child { border-bottom: none; }
+  .history-icon { font-size: 1.4rem; flex-shrink: 0; }
+  .history-details { flex: 1; min-width: 0; }
+  .history-name {
+    font-size: .875rem; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .history-meta { font-size: .72rem; color: var(--text-muted); margin-top: 2px; }
+  .history-play-btn {
+    flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
+    border: none; background: var(--accent); color: #fff;
+    font-size: .85rem; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
-    backdrop-filter: blur(4px);
+    transition: background .15s;
   }
-  .cold-box {
-    background: #fff; border-radius: 16px; padding: 36px 32px;
-    text-align: center; max-width: 320px; width: 90%;
-    box-shadow: 0 20px 60px rgba(0,0,0,.3);
+  .history-play-btn:hover { background: var(--accent-dark); }
+  .history-del-btn {
+    flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%;
+    border: 1.5px solid var(--border); background: transparent;
+    color: var(--text-muted); font-size: 1rem; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all .15s;
   }
-  .cold-spinner {
-    width: 48px; height: 48px; margin: 0 auto 20px;
-    border: 4px solid var(--border); border-top-color: var(--accent);
-    border-radius: 50%; animation: spin 1s linear infinite;
+  .history-del-btn:hover { border-color: var(--danger); color: var(--danger); }
+
+  /* ── 인라인 로딩 (콜드 스타트 메시지) ── */
+  .cold-inline {
+    font-size: .78rem; color: var(--text-muted);
+    background: #f8fafc; border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px; margin-top: 8px;
+    display: flex; align-items: center; gap: 6px; line-height: 1.5;
   }
-  .cold-emoji { font-size: 1.8rem; margin-bottom: 12px; }
-  .cold-title { font-size: 1.05rem; font-weight: 700; color: var(--accent-dark); margin-bottom: 12px; }
-  .cold-desc { font-size: .875rem; color: var(--text-muted); line-height: 1.75; margin-bottom: 16px; }
-  .cold-timer { font-size: .8rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .cold-inline.hidden { display: none; }
+  .cold-inline .spinner-dark { flex-shrink: 0; }
 
   /* ── 현재 코드 실시간 표시 ── */
   .live-chord {
@@ -355,195 +398,217 @@
 </style>
 </head>
 <body>
-<!-- Cold Start 안내 오버레이 -->
-<div id="coldStartOverlay" class="cold-overlay hidden">
-  <div class="cold-box">
-    <div class="cold-spinner"></div>
-    <div class="cold-emoji" id="coldEmoji">😴 ➡️ ☀️</div>
-    <div class="cold-title" id="coldTitle">서버가 잠에서 깨어나는 중이에요</div>
-    <div class="cold-desc" id="coldDesc">
-      이 서비스는 <strong>무료로 운영</strong>되고 있어서<br>
-      일정 시간 사용하지 않으면 서버가 절전 모드로 전환됩니다.<br><br>
-      처음 접속 시 <strong>최대 1분</strong> 정도 소요될 수 있어요.<br>
-      잠시만 기다려 주시면 정상적으로 이용하실 수 있습니다 🙏
-    </div>
-    <div class="cold-timer" id="coldTimer">잠시만요... 0초</div>
-  </div>
-</div>
-
 <div class="app">
   <header>
     <h1>🎵 반음 전조 도구</h1>
     <p>오디오 파일의 음정을 반음 단위로 조절하고, BPM과 코드를 분석하세요</p>
   </header>
 
-  <!-- 0. 유튜브 불러오기 -->
-  <div class="card" id="ytCard">
-    <div class="card-title">유튜브에서 불러오기</div>
-    <div class="yt-row">
-      <input class="yt-input" type="text" id="ytUrl"
-             placeholder="https://www.youtube.com/watch?v=...">
-      <button class="yt-btn" id="ytBtn">
-        <span id="ytBtnLabel">불러오기</span>
-        <span class="spinner-sm hidden" id="ytSpinner"></span>
+  <!-- ── Tab: 홈 ── -->
+  <div id="tabHome" class="tab-pane active">
+
+    <!-- 0. 유튜브 불러오기 -->
+    <div class="card" id="ytCard">
+      <div class="card-title">유튜브에서 불러오기</div>
+      <div class="yt-row">
+        <input class="yt-input" type="text" id="ytUrl"
+               placeholder="https://www.youtube.com/watch?v=...">
+        <button class="yt-btn" id="ytBtn">
+          <span id="ytBtnLabel">불러오기</span>
+          <span class="spinner-sm hidden" id="ytSpinner"></span>
+        </button>
+      </div>
+      <div class="server-hint hidden" id="serverHint">
+        ℹ️ 실제 다운로드는 서버 모드에서만 가능합니다 — <code>python app.py</code> 실행 후 <code>http://localhost:5000</code> 에서 이용하세요.
+      </div>
+      <div class="yt-status" id="ytStatus"></div>
+      <div class="cold-inline hidden" id="ytColdInline">
+        <span class="spinner-dark"></span>
+        <span id="ytColdMsg">서버 연결 중...</span>
+      </div>
+    </div>
+
+    <!-- 1. 파일 업로드 -->
+    <div class="card">
+      <div class="card-title">파일 업로드</div>
+      <div class="drop-zone" id="dropZone">
+        <input type="file" id="fileInput" accept=".mp3,.wav,.ogg,.flac,.m4a,audio/*">
+        <div class="drop-icon">🎧</div>
+        <div class="drop-label"><span>파일 선택</span> 또는 드래그하여 업로드</div>
+        <div class="drop-formats">지원 형식: MP3, WAV, OGG, FLAC, M4A</div>
+      </div>
+      <div class="file-info" id="fileInfo">
+        <div class="file-icon" id="fileIcon">🎵</div>
+        <div class="file-details">
+          <div class="file-name" id="fileName">–</div>
+          <div class="file-duration" id="fileDuration">–</div>
+        </div>
+      </div>
+      <div class="error-msg" id="errorMsg"></div>
+    </div>
+
+  </div><!-- /tabHome -->
+
+  <!-- ── Tab: 재생 ── -->
+  <div id="tabPlay" class="tab-pane">
+
+    <!-- 2. 음악 분석 결과 (서버 모드에서만 표시) -->
+    <div class="card hidden" id="analysisCard">
+      <div class="card-title">음악 분석</div>
+      <div class="analysis-loading" id="analysisLoading">
+        <span class="spinner-dark"></span>
+        <span id="analysisLoadingMsg">BPM · 조성 · 코드 분석 중…</span>
+      </div>
+      <div id="analysisResults" class="hidden">
+        <div class="analysis-badges">
+          <div class="badge">
+            <span class="badge-label">BPM</span>
+            <span class="badge-value" id="bpmVal">–</span>
+          </div>
+          <div class="badge">
+            <span class="badge-label">KEY</span>
+            <span class="badge-value" id="keyVal">–</span>
+          </div>
+          <div class="badge">
+            <span class="badge-label">박자</span>
+            <span class="badge-value" id="meterVal">–</span>
+          </div>
+        </div>
+        <div class="chord-section">
+          <div class="chord-section-title">코드 진행 (재생 중 현재 코드 하이라이트)</div>
+          <div class="chord-timeline" id="chordTimeline">
+            <span class="chord-empty">코드 정보 없음</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. 반음 조절 -->
+    <div class="card">
+      <div class="card-title">반음 조절</div>
+      <div class="pitch-display">
+        <div class="pitch-value" id="pitchValue">0 반음</div>
+        <div class="pitch-name" id="pitchName">원음</div>
+      </div>
+      <div class="slider-wrap">
+        <input type="range" id="pitchSlider" min="-12" max="12" step="1" value="0">
+      </div>
+      <div class="slider-labels"><span>−12</span><span>−6</span><span>0</span><span>+6</span><span>+12</span></div>
+      <div class="presets" id="presets">
+        <button class="preset-btn" data-semitones="-5">−5</button>
+        <button class="preset-btn" data-semitones="-3">−3</button>
+        <button class="preset-btn" data-semitones="-2">−2</button>
+        <button class="preset-btn" data-semitones="-1">−1</button>
+        <button class="preset-btn active" data-semitones="0">0</button>
+        <button class="preset-btn" data-semitones="1">+1</button>
+        <button class="preset-btn" data-semitones="2">+2</button>
+        <button class="preset-btn" data-semitones="3">+3</button>
+        <button class="preset-btn" data-semitones="5">+5</button>
+      </div>
+    </div>
+
+    <!-- 2.5 줄기 분리 -->
+    <div class="card hidden" id="stemCard">
+      <div class="card-title">줄기 분리 (멜로디 / 드럼)</div>
+      <button class="stem-btn" id="stemBtn">
+        <span id="stemBtnLabel">🎛 줄기 분리 시작</span>
+        <span class="spinner-dark hidden" id="stemSpinner"></span>
       </button>
-    </div>
-    <div class="server-hint hidden" id="serverHint">
-      ℹ️ 실제 다운로드는 서버 모드에서만 가능합니다 — <code>python app.py</code> 실행 후 <code>http://localhost:5000</code> 에서 이용하세요.
-    </div>
-    <div class="yt-status" id="ytStatus"></div>
-  </div>
-
-  <!-- 1. 파일 업로드 -->
-  <div class="card">
-    <div class="card-title">파일 업로드</div>
-    <div class="drop-zone" id="dropZone">
-      <input type="file" id="fileInput" accept=".mp3,.wav,.ogg,.flac,.m4a,audio/*">
-      <div class="drop-icon">🎧</div>
-      <div class="drop-label"><span>파일 선택</span> 또는 드래그하여 업로드</div>
-      <div class="drop-formats">지원 형식: MP3, WAV, OGG, FLAC, M4A</div>
-    </div>
-    <div class="file-info" id="fileInfo">
-      <div class="file-icon" id="fileIcon">🎵</div>
-      <div class="file-details">
-        <div class="file-name" id="fileName">–</div>
-        <div class="file-duration" id="fileDuration">–</div>
-      </div>
-    </div>
-    <div class="error-msg" id="errorMsg"></div>
-  </div>
-
-  <!-- 2. 음악 분석 결과 (서버 모드에서만 표시) -->
-  <div class="card hidden" id="analysisCard">
-    <div class="card-title">음악 분석</div>
-
-    <div class="analysis-loading" id="analysisLoading">
-      <span class="spinner-dark"></span>
-      <span>BPM · 조성 · 코드 분석 중…</span>
-    </div>
-
-    <div id="analysisResults" class="hidden">
-      <div class="analysis-badges">
-        <div class="badge">
-          <span class="badge-label">BPM</span>
-          <span class="badge-value" id="bpmVal">–</span>
+      <div class="stem-rows" id="stemRows">
+        <div class="stem-row">
+          <span class="stem-label">멜로디/화음</span>
+          <div class="stem-slider-wrap">
+            <input type="range" class="stem-slider" id="stemSliderH" min="0" max="100" value="100">
+          </div>
+          <span class="stem-pct" id="stemPctH">100%</span>
         </div>
-        <div class="badge">
-          <span class="badge-label">KEY</span>
-          <span class="badge-value" id="keyVal">–</span>
-        </div>
-        <div class="badge">
-          <span class="badge-label">박자</span>
-          <span class="badge-value" id="meterVal">–</span>
+        <div class="stem-row">
+          <span class="stem-label">드럼/리듬</span>
+          <div class="stem-slider-wrap">
+            <input type="range" class="stem-slider" id="stemSliderP" min="0" max="100" value="100">
+          </div>
+          <span class="stem-pct" id="stemPctP">100%</span>
         </div>
       </div>
+      <div class="stem-status" id="stemStatus"></div>
+    </div>
 
-      <div class="chord-section">
-        <div class="chord-section-title">코드 진행 (재생 중 현재 코드 하이라이트)</div>
-        <div class="chord-timeline" id="chordTimeline">
-          <span class="chord-empty">코드 정보 없음</span>
+    <!-- 4. 재생 -->
+    <div class="card">
+      <div class="card-title">미리듣기</div>
+      <div id="liveChordDisplay" class="live-chord hidden">
+        <div class="live-chord-label">현재 코드</div>
+        <div class="live-chord-name" id="liveChordName">–</div>
+        <div class="live-chord-numeral" id="liveChordNumeral"></div>
+      </div>
+      <div class="playback-row">
+        <button class="play-btn" id="playBtn" disabled title="재생">▶</button>
+        <div style="flex:1">
+          <div class="progress-wrap" id="progressWrap">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
         </div>
+        <div class="time-display" id="timeDisplay">0:00 / 0:00</div>
       </div>
     </div>
-  </div>
 
-  <!-- 3. 반음 조절 -->
-  <div class="card">
-    <div class="card-title">반음 조절</div>
-    <div class="pitch-display">
-      <div class="pitch-value" id="pitchValue">0 반음</div>
-      <div class="pitch-name" id="pitchName">원음</div>
+    <!-- 5. 다운로드 -->
+    <div class="card">
+      <div class="card-title">내보내기</div>
+      <div class="export-options">
+        <div class="export-row">
+          <span class="export-option-label">형식</span>
+          <div class="fmt-btns">
+            <button class="fmt-btn active" data-fmt="wav">WAV</button>
+            <button class="fmt-btn" data-fmt="mp3">MP3</button>
+          </div>
+        </div>
+        <div class="export-row">
+          <span class="export-option-label">품질</span>
+          <div class="quality-btns">
+            <button class="qty-btn active" data-qty="high">원본</button>
+            <button class="qty-btn" data-qty="med">중간</button>
+            <button class="qty-btn" data-qty="low">저용량</button>
+            <button class="qty-btn" data-qty="min">최저</button>
+          </div>
+        </div>
+      </div>
+      <button class="export-btn" id="exportBtn" disabled>
+        <span id="exportIcon">💾</span>
+        <span id="exportLabel">다운로드</span>
+        <span class="spinner hidden" id="exportSpinner"></span>
+      </button>
+      <div class="export-status" id="exportStatus"></div>
     </div>
-    <div class="slider-wrap">
-      <input type="range" id="pitchSlider" min="-12" max="12" step="1" value="0">
-    </div>
-    <div class="slider-labels"><span>−12</span><span>−6</span><span>0</span><span>+6</span><span>+12</span></div>
-    <div class="presets" id="presets">
-      <button class="preset-btn" data-semitones="-5">−5</button>
-      <button class="preset-btn" data-semitones="-3">−3</button>
-      <button class="preset-btn" data-semitones="-2">−2</button>
-      <button class="preset-btn" data-semitones="-1">−1</button>
-      <button class="preset-btn active" data-semitones="0">0</button>
-      <button class="preset-btn" data-semitones="1">+1</button>
-      <button class="preset-btn" data-semitones="2">+2</button>
-      <button class="preset-btn" data-semitones="3">+3</button>
-      <button class="preset-btn" data-semitones="5">+5</button>
-    </div>
-  </div>
 
-  <!-- 2.5 줄기 분리 -->
-  <div class="card hidden" id="stemCard">
-    <div class="card-title">줄기 분리 (멜로디 / 드럼)</div>
-    <button class="stem-btn" id="stemBtn">
-      <span id="stemBtnLabel">🎛 줄기 분리 시작</span>
-      <span class="spinner-dark hidden" id="stemSpinner"></span>
+  </div><!-- /tabPlay -->
+
+  <!-- ── Tab: 기록 ── -->
+  <div id="tabHistory" class="tab-pane">
+    <div class="card">
+      <div class="card-title">재생 기록</div>
+      <div id="historyList">
+        <div class="history-empty">아직 재생한 곡이 없습니다.<br>유튜브 링크나 파일을 불러오면<br>여기에 기록됩니다.</div>
+      </div>
+    </div>
+  </div><!-- /tabHistory -->
+
+  <!-- ── 하단 탭 내비게이션 ── -->
+  <nav class="bottom-nav">
+    <button class="nav-tab active" data-tab="home">
+      <span class="nav-icon">🏠</span>
+      <span>홈</span>
     </button>
-    <div class="stem-rows" id="stemRows">
-      <div class="stem-row">
-        <span class="stem-label">멜로디/화음</span>
-        <div class="stem-slider-wrap">
-          <input type="range" class="stem-slider" id="stemSliderH" min="0" max="100" value="100">
-        </div>
-        <span class="stem-pct" id="stemPctH">100%</span>
-      </div>
-      <div class="stem-row">
-        <span class="stem-label">드럼/리듬</span>
-        <div class="stem-slider-wrap">
-          <input type="range" class="stem-slider" id="stemSliderP" min="0" max="100" value="100">
-        </div>
-        <span class="stem-pct" id="stemPctP">100%</span>
-      </div>
-    </div>
-    <div class="stem-status" id="stemStatus"></div>
-  </div>
-
-  <!-- 4. 재생 -->
-  <div class="card">
-    <div class="card-title">미리듣기</div>
-    <div id="liveChordDisplay" class="live-chord hidden">
-      <div class="live-chord-label">현재 코드</div>
-      <div class="live-chord-name" id="liveChordName">–</div>
-      <div class="live-chord-numeral" id="liveChordNumeral"></div>
-    </div>
-    <div class="playback-row">
-      <button class="play-btn" id="playBtn" disabled title="재생">▶</button>
-      <div style="flex:1">
-        <div class="progress-wrap" id="progressWrap">
-          <div class="progress-fill" id="progressFill"></div>
-        </div>
-      </div>
-      <div class="time-display" id="timeDisplay">0:00 / 0:00</div>
-    </div>
-  </div>
-
-  <!-- 5. 다운로드 -->
-  <div class="card">
-    <div class="card-title">내보내기</div>
-    <div class="export-options">
-      <div class="export-row">
-        <span class="export-option-label">형식</span>
-        <div class="fmt-btns">
-          <button class="fmt-btn active" data-fmt="wav">WAV</button>
-          <button class="fmt-btn" data-fmt="mp3">MP3</button>
-        </div>
-      </div>
-      <div class="export-row">
-        <span class="export-option-label">품질</span>
-        <div class="quality-btns">
-          <button class="qty-btn active" data-qty="high">원본</button>
-          <button class="qty-btn" data-qty="med">중간</button>
-          <button class="qty-btn" data-qty="low">저용량</button>
-          <button class="qty-btn" data-qty="min">최저</button>
-        </div>
-      </div>
-    </div>
-    <button class="export-btn" id="exportBtn" disabled>
-      <span id="exportIcon">💾</span>
-      <span id="exportLabel">다운로드</span>
-      <span class="spinner hidden" id="exportSpinner"></span>
+    <button class="nav-tab" data-tab="play">
+      <span class="nav-icon">🎵</span>
+      <span>재생</span>
     </button>
-    <div class="export-status" id="exportStatus"></div>
-  </div>
+    <button class="nav-tab" data-tab="history">
+      <span class="nav-icon">📋</span>
+      <span>기록</span>
+    </button>
+  </nav>
+
 </div>
 
 <script>
@@ -596,6 +661,8 @@ const ytBtn         = $('ytBtn');
 const ytBtnLabel    = $('ytBtnLabel');
 const ytSpinner     = $('ytSpinner');
 const ytStatus      = $('ytStatus');
+const ytColdInline  = $('ytColdInline');
+const ytColdMsg     = $('ytColdMsg');
 const dropZone      = $('dropZone');
 const fileInput     = $('fileInput');
 const fileInfo      = $('fileInfo');
@@ -635,6 +702,7 @@ const stemSliderP      = $('stemSliderP');
 const stemPctH         = $('stemPctH');
 const stemPctP         = $('stemPctP');
 const stemStatus       = $('stemStatus');
+const analysisLoadingMsg = $('analysisLoadingMsg');
 
 // ── 서버 모드 감지 ──
 const IS_SERVER = window.location.protocol === 'http:' || window.location.protocol === 'https:';
@@ -642,82 +710,114 @@ if (!IS_SERVER) {
   $('serverHint').classList.remove('hidden');
 }
 
-// ── Cold Start 오버레이 ──
-let _coldTimerInterval = null;
+// ── 탭 전환 ──
+function switchTab(name) {
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  const pane = $({home:'tabHome', play:'tabPlay', history:'tabHistory'}[name]);
+  const btn  = document.querySelector(`.nav-tab[data-tab="${name}"]`);
+  if (pane) pane.classList.add('active');
+  if (btn)  btn.classList.add('active');
+  if (name === 'history') renderHistory();
+}
+document.querySelectorAll('.nav-tab').forEach(btn => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+});
 
-const DEFAULT_OVERLAY = {
-  emoji: '😴 ➡️ ☀️',
-  title: '서버가 잠에서 깨어나는 중이에요',
-  desc: '이 서비스는 <strong>무료로 운영</strong>되고 있어서<br>일정 시간 사용하지 않으면 서버가 절전 모드로 전환됩니다.<br><br>처음 접속 시 <strong>최대 1분</strong> 정도 소요될 수 있어요.<br>잠시만 기다려 주시면 정상적으로 이용하실 수 있습니다 🙏',
-};
+// ── 재생 기록 (localStorage) ──
+const HISTORY_KEY = 'modulation_history';
 
-function setOverlayContent(config = {}) {
-  const content = { ...DEFAULT_OVERLAY, ...config };
-  $('coldEmoji').textContent = content.emoji;
-  $('coldTitle').textContent = content.title;
-  $('coldDesc').innerHTML = content.desc;
+function addToHistory(name, type, ytUrl = null) {
+  const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+  const filtered = history.filter(h => !(h.name === name && h.type === type));
+  filtered.unshift({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+    name, type, ytUrl,
+    date: new Date().toISOString(),
+    duration: state.duration,
+  });
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(filtered.slice(0, 50)));
+  renderHistory();
 }
 
-function showColdStartOverlay(config = {}) {
-  setOverlayContent(config);
-  const overlay = $('coldStartOverlay');
-  if (!overlay.classList.contains('hidden')) return;
-  overlay.classList.remove('hidden');
-  let elapsed = 0;
-  _coldTimerInterval = setInterval(() => {
-    elapsed++;
-    $('coldTimer').textContent = `${elapsed}초 경과`;
-  }, 1000);
-}
-
-function hideColdStartOverlay() {
-  $('coldStartOverlay').classList.add('hidden');
-  clearInterval(_coldTimerInterval);
-  _coldTimerInterval = null;
-  $('coldTimer').textContent = '잠시만요... 0초';
-  setOverlayContent();
-}
-
-async function fetchWithColdStart(url, options = {}, config = {}) {
-  const {
-    overlayDelay = 3000,
-    timeoutMs = 90000,
-    timeoutMessage = '요청 시간이 너무 오래 걸립니다. 잠시 후 다시 시도해 주세요.',
-    overlay = {},
-  } = config;
-  const controller = new AbortController();
-  const callerSignal = options.signal;
-  if (callerSignal) {
-    if (callerSignal.aborted) controller.abort();
-    else callerSignal.addEventListener('abort', () => controller.abort(), { once: true });
+function renderHistory() {
+  const historyList = $('historyList');
+  if (!historyList) return;
+  const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+  if (!history.length) {
+    historyList.innerHTML = '<div class="history-empty">아직 재생한 곡이 없습니다.<br>유튜브 링크나 파일을 불러오면<br>여기에 기록됩니다.</div>';
+    return;
   }
-  const timer = setTimeout(() => showColdStartOverlay(overlay), overlayDelay);
-  const timeout = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  historyList.innerHTML = history.map(item => {
+    const date = new Date(item.date).toLocaleDateString('ko-KR', {month:'short', day:'numeric'});
+    const dur  = item.duration ? ` · ${fmtTime(item.duration)}` : '';
+    const icon = item.type === 'youtube' ? '▶️' : '🎵';
+    const canReplay = item.type === 'youtube' && item.ytUrl;
+    return `<div class="history-item">
+      <div class="history-icon">${icon}</div>
+      <div class="history-details">
+        <div class="history-name">${item.name}</div>
+        <div class="history-meta">${date}${dur}${canReplay ? '' : ' · 파일 재업로드 필요'}</div>
+      </div>
+      ${canReplay ? `<button class="history-play-btn" onclick="replayFromHistory('${item.id}')">▶</button>` : ''}
+      <button class="history-del-btn" onclick="deleteFromHistory('${item.id}')">×</button>
+    </div>`;
+  }).join('');
+}
+
+function replayFromHistory(id) {
+  const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+  const item = history.find(h => h.id === id);
+  if (!item || !item.ytUrl) return;
+  switchTab('home');
+  ytUrlInput.value = item.ytUrl;
+  loadFromYouTube();
+}
+
+function deleteFromHistory(id) {
+  const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history.filter(h => h.id !== id)));
+  renderHistory();
+}
+
+// ── 인라인 Cold Start 로딩 ──
+async function fetchWithColdStart(url, options = {}, config = {}) {
+  const { timeoutMs = null, coldEl = null, coldMsgEl = null } = config;
+
+  let coldInterval = null;
+  let elapsed = 0;
+
+  const coldTimer = setTimeout(() => {
+    if (coldEl)    coldEl.classList.remove('hidden');
+    if (coldMsgEl) coldMsgEl.textContent = '😴 서버 기동 중... 잠시만요 (최대 60초)';
+    coldInterval = setInterval(() => {
+      elapsed++;
+      if (coldMsgEl) coldMsgEl.textContent = `😴 서버 기동 중... ${elapsed}초 경과`;
+    }, 1000);
+  }, 3000);
+
+  const controller = new AbortController();
+  const abortTimer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
   try {
     const res = await fetch(url, { ...options, signal: controller.signal });
     return res;
   } catch (e) {
-    if (controller.signal.aborted) throw new Error(timeoutMessage);
+    if (controller.signal.aborted) throw new Error('요청이 중단되었습니다. 다시 시도해 주세요.');
     throw e;
   } finally {
-    clearTimeout(timer);
-    clearTimeout(timeout);
-    hideColdStartOverlay();
+    clearTimeout(coldTimer);
+    clearTimeout(abortTimer);
+    clearInterval(coldInterval);
+    if (coldEl)    coldEl.classList.add('hidden');
+    if (coldMsgEl) coldMsgEl.textContent = '';
   }
 }
 
-// 페이지 로드 후 서버 상태 자동 체크 (서버 모드일 때만)
+// 페이지 로드 시 서버 웜업 (UI 차단 없음)
 if (IS_SERVER) {
-  setTimeout(async () => {
-    try {
-      await fetchWithColdStart('/health', {}, {
-        overlayDelay: 2000,
-        timeoutMs: 70000,
-        timeoutMessage: '서버 응답이 지연되고 있습니다. 잠시 후 새로고침해 주세요.',
-      });
-    } catch (_) { /* 오류 무시 */ } finally {
-      hideColdStartOverlay();
-    }
+  setTimeout(() => {
+    fetch('/health').catch(() => {});
   }, 500);
 }
 
@@ -863,8 +963,12 @@ async function loadAudioBuffer(arrayBuffer, displayName, ytFileId = null) {
     analysisCard.classList.remove('hidden');
     analysisLoading.classList.remove('hidden');
     analysisResults.classList.add('hidden');
+    analysisLoadingMsg.textContent = 'BPM · 조성 · 코드 분석 중…';
     chordTimeline.innerHTML = '';
   }
+
+  // 오디오 로드 완료 → 재생 탭으로 자동 전환
+  switchTab('play');
 }
 
 // ── 음악 분석 ──
@@ -886,14 +990,9 @@ async function triggerAnalysis(file = null, fileId = null) {
     }
 
     const res  = await fetchWithColdStart('/analyze', { method: 'POST', headers, body }, {
-      overlayDelay: 5000,
-      timeoutMs: 120000,
-      timeoutMessage: '음악 분석이 2분을 넘겼습니다. 더 짧은 음원으로 다시 시도해 주세요.',
-      overlay: {
-        emoji: '📊',
-        title: '음악을 분석하는 중이에요',
-        desc: 'BPM, 조성, 코드 진행을 계산하고 있습니다.<br><br>무료 서버에서는 음원 길이에 따라 시간이 걸릴 수 있어요.<br><strong>2분</strong>을 넘기면 자동으로 중단됩니다.',
-      },
+      timeoutMs: null,
+      coldEl: null,
+      coldMsgEl: analysisLoadingMsg,
     });
     const data = await res.json();
 
@@ -965,6 +1064,7 @@ async function handleFile(file) {
     state.sourceFile = file;
     fileIcon.textContent = '🎵';
     dropZone.style.borderColor = 'var(--accent-light)';
+    addToHistory(displayName, 'file', null);
 
     // 분석은 비동기 병렬 (오디오 로드 완료 후)
     triggerAnalysis(file);
@@ -1000,14 +1100,9 @@ async function loadFromYouTube() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
     }, {
-      overlayDelay: 4000,
       timeoutMs: 90000,
-      timeoutMessage: 'YouTube 오디오 준비가 90초를 넘겼습니다. 서버가 YouTube에 막혔거나 영상 응답이 느린 상태입니다. 잠시 후 다시 시도하거나 파일 업로드를 이용해 주세요.',
-      overlay: {
-        emoji: '🎵',
-        title: 'YouTube 오디오를 준비하는 중이에요',
-        desc: '서버가 YouTube에서 오디오를 가져와 변환하고 있습니다.<br><br>무료 서버에서는 영상 상태와 YouTube 응답에 따라 시간이 걸릴 수 있어요.<br><strong>90초</strong>를 넘기면 자동으로 중단됩니다.',
-      },
+      coldEl: ytColdInline,
+      coldMsgEl: ytColdMsg,
     });
     const dlData = await dlRes.json();
     if (!dlRes.ok || dlData.error) throw new Error(dlData.error || '정보 가져오기 실패');
@@ -1016,14 +1111,9 @@ async function loadFromYouTube() {
 
     // Step 2: 같은 출처의 서버 캐시 파일만 읽는다. YouTube CDN 직접 fetch는 CORS로 막힌다.
     const audioRes = await fetchWithColdStart(`/yt/audio/${dlData.id}`, {}, {
-      overlayDelay: 4000,
       timeoutMs: 60000,
-      timeoutMessage: '오디오 파일 수신이 1분을 넘겼습니다. 다시 시도해 주세요.',
-      overlay: {
-        emoji: '🎧',
-        title: '오디오 파일을 불러오는 중이에요',
-        desc: '서버에 준비된 오디오를 브라우저로 가져오고 있습니다.<br><br>네트워크 상태나 파일 크기에 따라 잠시 걸릴 수 있어요.',
-      },
+      coldEl: ytColdInline,
+      coldMsgEl: ytColdMsg,
     });
     if (!audioRes.ok) {
       const message = await audioRes.text().catch(() => '');
@@ -1037,6 +1127,7 @@ async function loadFromYouTube() {
     fileName.textContent   = title;
     setYtStatus(`✅ "${title}" 로드 완료`, 'success');
     dropZone.style.borderColor = 'var(--accent-light)';
+    addToHistory(title, 'youtube', url);
 
     // 분석: 서버에 캐시된 임시 오디오 파일 ID 전달
     triggerAnalysis(null, dlData.id);
@@ -1330,9 +1421,7 @@ async function loadStems() {
     let stemData;
     if (state.stemFid) {
       const res = await fetchWithColdStart(`/stems/${state.stemFid}`, {}, {
-        overlayDelay: 10000, timeoutMs: 65000,
-        timeoutMessage: '줄기 분리가 65초를 넘겼습니다. 더 짧은 음원을 사용해 주세요.',
-        overlay: { emoji: '🎛', title: '줄기 분리 중', desc: '멜로디와 드럼 성분을 분리하고 있습니다.<br>최대 60초 소요.' },
+        timeoutMs: 65000, coldEl: null, coldMsgEl: stemStatus,
       });
       stemData = await res.json();
       if (!res.ok || stemData.error) throw new Error(stemData.error || '줄기 분리 실패');
@@ -1340,9 +1429,7 @@ async function loadStems() {
       const fd = new FormData();
       fd.append('file', state.sourceFile);
       const res = await fetchWithColdStart('/stems/file', { method: 'POST', body: fd }, {
-        overlayDelay: 10000, timeoutMs: 65000,
-        timeoutMessage: '줄기 분리가 65초를 넘겼습니다. 더 짧은 음원을 사용해 주세요.',
-        overlay: { emoji: '🎛', title: '줄기 분리 중', desc: '멜로디와 드럼 성분을 분리하고 있습니다.<br>최대 60초 소요.' },
+        timeoutMs: 65000, coldEl: null, coldMsgEl: stemStatus,
       });
       stemData = await res.json();
       if (!res.ok || stemData.error) throw new Error(stemData.error || '줄기 분리 실패');
