@@ -854,7 +854,7 @@ def assetlinks():
             "namespace": "android_app",
             "package_name": "com.modulation.app",
             "sha256_cert_fingerprints": [
-                "PLACEHOLDER:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
+                "31:6D:D8:51:24:80:C8:4F:F6:15:C8:41:4B:91:78:67:73:EA:E8:A6:12:49:D7:60:C6:D7:D2:97:EA:40:45:EA"
             ],
         },
     }]
