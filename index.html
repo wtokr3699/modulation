@@ -21,6 +21,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#4f46e5">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="전조 도구">
+<link rel="apple-touch-icon" href="/icon.svg">
 <title>반음 전조 도구</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.0/lame.min.js"></script>
@@ -1428,6 +1435,11 @@ stemSliderP.addEventListener('input', () => {
 stemBtn.addEventListener('click', loadStems);
 
 updateSliderGradient();
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js', {scope: '/'}).catch(() => {});
+}
 </script>
 </body>
 </html>

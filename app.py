@@ -8,21 +8,24 @@
 """
 
 import atexit
+import json as _json
 import mimetypes
 import os
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
 import time
 import uuid
 import warnings
+import zlib
 
 import librosa
 import numpy as np
 import yt_dlp
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, make_response, request, send_file
 from werkzeug.utils import secure_filename
 
 warnings.simplefilter("ignore")
@@ -769,6 +772,114 @@ def health():
 @app.route('/')
 def index():
     return send_file('index.html')
+
+
+# ── PWA / TWA 지원 ────────────────────────────────────────────────────────────
+
+def _png_solid(size, r=79, g=70, b=229):
+    """PIL 없이 단색 PNG를 생성한다 (stdlib struct/zlib만 사용)."""
+    row = bytes([0] + [r, g, b] * size)   # filter=None + RGB per pixel
+    raw = row * size
+    compressed = zlib.compress(raw, 9)
+
+    def _chunk(tag, data):
+        body = tag + data
+        return (struct.pack('>I', len(data)) + body
+                + struct.pack('>I', zlib.crc32(body) & 0xFFFFFFFF))
+
+    return (
+        b'\x89PNG\r\n\x1a\n'
+        + _chunk(b'IHDR', struct.pack('>II5B', size, size, 8, 2, 0, 0, 0))
+        + _chunk(b'IDAT', compressed)
+        + _chunk(b'IEND', b'')
+    )
+
+
+@app.route('/manifest.json')
+def pwa_manifest():
+    manifest = {
+        "name": "반음 전조 도구",
+        "short_name": "전조 도구",
+        "description": "음악 키(조성) 분석 및 반음 단위 전조",
+        "start_url": "/",
+        "display": "standalone",
+        "orientation": "portrait-primary",
+        "background_color": "#f1f5f9",
+        "theme_color": "#4f46e5",
+        "lang": "ko",
+        "categories": ["music", "utilities"],
+        "icons": [
+            {"src": "/icon.svg",     "sizes": "any",     "type": "image/svg+xml", "purpose": "any"},
+            {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png",     "purpose": "any"},
+            {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png",     "purpose": "maskable"},
+        ],
+    }
+    resp = make_response(_json.dumps(manifest, ensure_ascii=False))
+    resp.headers['Content-Type'] = 'application/manifest+json'
+    resp.headers['Cache-Control'] = 'public, max-age=3600'
+    return resp
+
+
+@app.route('/icon.svg')
+def app_icon_svg():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+        '<rect width="512" height="512" rx="80" fill="#4f46e5"/>'
+        '<text x="256" y="356" font-size="300" font-family="serif" '
+        'text-anchor="middle" fill="white">♪</text>'
+        '</svg>'
+    )
+    resp = make_response(svg)
+    resp.headers['Content-Type'] = 'image/svg+xml'
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
+
+
+@app.route('/icon-<int:size>.png')
+def app_icon_png(size):
+    if size not in (192, 512):
+        return 'Not Found', 404
+    resp = make_response(_png_solid(size))
+    resp.headers['Content-Type'] = 'image/png'
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
+
+
+@app.route('/.well-known/assetlinks.json')
+def assetlinks():
+    # bubblewrap 키스토어 생성 후 sha256_cert_fingerprints 업데이트 필요
+    links = [{
+        "relation": ["delegate_permission/common.handle_all_urls"],
+        "target": {
+            "namespace": "android_app",
+            "package_name": "com.modulation.app",
+            "sha256_cert_fingerprints": [
+                "PLACEHOLDER:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
+            ],
+        },
+    }]
+    resp = make_response(_json.dumps(links))
+    resp.headers['Content-Type'] = 'application/json'
+    return resp
+
+
+@app.route('/sw.js')
+def service_worker():
+    sw = """\
+const CACHE = 'modulation-v1';
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/', '/manifest.json'])));
+});
+self.addEventListener('fetch', e => {
+  const url = e.request.url;
+  if (['/analyze', '/yt/', '/upload', '/stems', '/stem-audio'].some(p => url.includes(p))) return;
+  e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+});
+"""
+    resp = make_response(sw)
+    resp.headers['Content-Type'] = 'application/javascript'
+    resp.headers['Service-Worker-Allowed'] = '/'
+    return resp
 
 
 def _cleanup_temp_entry(fid):
