@@ -27,7 +27,7 @@ RUN git clone --depth 1 --branch 1.3.1 \
     npx tsc && \
     npm prune --omit=dev
 
-COPY app.py index.html ./
+COPY app.py index.html app-icon.png ./
 
 EXPOSE 5000
 

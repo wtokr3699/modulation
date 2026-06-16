@@ -839,10 +839,22 @@ def app_icon_svg():
 def app_icon_png(size):
     if size not in (192, 512):
         return 'Not Found', 404
-    resp = make_response(_png_solid(size))
-    resp.headers['Content-Type'] = 'image/png'
+    icon_path = os.path.join(os.path.dirname(__file__), 'app-icon.png')
+    if os.path.exists(icon_path):
+        resp = make_response(send_file(icon_path, mimetype='image/png'))
+    else:
+        resp = make_response(_png_solid(size))
+        resp.headers['Content-Type'] = 'image/png'
     resp.headers['Cache-Control'] = 'public, max-age=86400'
     return resp
+
+
+@app.route('/app-icon.png')
+def app_icon_full():
+    icon_path = os.path.join(os.path.dirname(__file__), 'app-icon.png')
+    if os.path.exists(icon_path):
+        return send_file(icon_path, mimetype='image/png')
+    return 'Not Found', 404
 
 
 @app.route('/.well-known/assetlinks.json')
